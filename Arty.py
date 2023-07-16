@@ -7,7 +7,6 @@ import asyncio
 import logging
 
 import disnake
-from disnake import guild
 from disnake.ext import commands
 
 log_formatter = logging.Formatter('[%(asctime)s][%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
@@ -36,8 +35,6 @@ if os.path.exists(secrets_file):
         bot_token = secrets['bot_token']
         guild_id = secrets['guild_id']
         general_chanel = secrets['general_chanel']
-        steam_api_key = secrets['steam_api_key']
-        news_channel = secrets['news_channel']
 else:
     error_msg = f'Could not find {secrets_file}'
     logger.error(error_msg)
