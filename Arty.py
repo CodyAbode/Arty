@@ -177,6 +177,43 @@ async def leaderboard(inter, quiet: bool = True):
     leaderboard_embed.add_field(name='Tickets Earned', value=tickets)
     await inter.response.send_message(embed=leaderboard_embed, ephemeral=quiet)
 
+@ticket.sub_command()
+async def send(
+    inter,
+    user: disnake.Member,
+    amount: int = commands.Param(gt=0),
+    ):
+    """
+    Send ticket(s) to another user.
+
+    Parameters
+    ----------
+    user: The user to send ticket(s) to.
+    amount: The amount to send.
+    """
+    logger.info(f'{inter.author} used /ticket send(user: {user.name} amount: {amount})')
+    user_data = ensure_user_data(user)
+    if user_data[str(inter.author.id)]['tickets'] < amount:
+        await inter.response.send_message(f"You can not send more tickets than you have.", ephemeral=True)
+        logger.info(f'{inter.author} tried to send more tickets than they have ({amount})')
+        return
+    if user.bot:
+        await inter.response.send_message(f"You can not send ticket(s) to bots.", ephemeral=True)
+        logger.info(f'{inter.author} tried to send ticket(s) to a bot ({user.name})')
+        return
+    if user.id == inter.author.id:
+        await inter.response.send_message(f"You can not send ticket(s) to yourself.", ephemeral=True)
+        logger.info(f'{inter.author} tried to send ticket(s) to themself')
+        return
+    user_data[str(inter.author.id)]['tickets'] -= amount
+    user_data[str(user.id)]['tickets'] += amount
+    save_user_data(user_data)
+    await inter.response.send_message(f"Sent {amount} {emoji('ArcadeTicket')} to {user.nick or user.global_name or user.name}.", ephemeral=True)
+    logger.info(f'{inter.author} sent {amount} ticket(s) to {user.name}')
+    dm = user.dm_channel or await user.create_dm()
+    await dm.send(f"{inter.author.nick or inter.author.global_name or inter.author.name} ({inter.author.name}) sent you {amount} {emoji('ArcadeTicket')}!")
+    return
+
 @bot.slash_command()
 async def inventory(inter):
     """Display your items."""
