@@ -174,9 +174,10 @@ async def leaderboard(inter, quiet: bool = False):
     users = ''
     tickets = ''
     for user_id, user_data in sorted_data.items():
-        user = await bot.fetch_user(user_id)
+        #user = await bot.fetch_user(user_id)
+        user = await bot.guilds[0].fetch_member(user_id)
         ticket = str(user_data['tickets_earned'])
-        users += f'{user.name}\n'
+        users += f'{user.nick or user.global_name or user.name}\n'
         tickets += f"{ticket} {emoji('ArcadeTicket')}\n"
     leaderboard_embed.add_field(name='Members', value=users)
     leaderboard_embed.add_field(name='Tickets Earned', value=tickets)
@@ -209,10 +210,6 @@ async def inventory(inter):
         color=main_color
     )
     await inter.response.send_message(embed=inventory_embed, ephemeral=True)
-
-@bot.slash_command()
-async def item(inter):
-    pass
 
 async def autocomplete_items(inter, string: str) -> List[str]:
     user_data = ensure_user_data(inter.author)
@@ -349,19 +346,62 @@ class ColorRoleView(disnake.ui.View):
     @disnake.ui.button(label='Toggle Role', style=disnake.ButtonStyle.blurple, row=0)
     async def toggle(self, button: disnake.ui.Button, inter: disnake.MessageInteraction):
         if self.color == 'custom':
-            await inter.send(f"Custom colors coming soon:tm:.", ephemeral=True)
-            logger.info(f'{inter.author} tried to add a custom color role')
-            return
+            await inter.response.send_modal(
+                    title='Custom Color Role',
+                    custom_id='custom-color-role',
+                    components=[
+                        disnake.ui.TextInput(
+                        label='Hex Color',
+                        custom_id='hex-color',
+                        style=disnake.TextInputStyle.short,
+                        placeholder='000000',
+                        min_length=6,
+                        max_length=6
+                        )
+                    ]
+                )
+            
+            try:
+                modal_inter: disnake.ModalInteraction = await bot.wait_for(
+                    'modal_submit',
+                    check=lambda i: i.custom_id == 'custom-color-role' and i.author.id == inter.author.id,
+                    timeout=300,
+                )
+            except asyncio.TimeoutError:
+                return
+            
+            hex_color = modal_inter.text_values['hex-color']
+            if not hex_color:
+                await modal_inter.response.send_message("No color input.", ephemeral=True)
+                self.stop()
+                return
+            
+            self.color = hex_color
+            await modal_inter.response.send_message(f"Chosen color: {hex_color.upper()}.", ephemeral=True)
+            self.stop()
+            
         role_name = f"Color: {self.color.upper()}"
         guild_role_names = []
         for role in bot.guilds[0].roles:
             guild_role_names.append(role.name)
         if not role_name in guild_role_names:
-            rgb_color = hex_to_rgb(self.color)
+            try:
+                rgb_color = hex_to_rgb(self.color)
+            except ValueError:
+                await inter.send(f"{self.color.upper()} is not a valid hex color.", ephemeral=True)
+                logger.info(f'{inter.author} submitted invalid hex color {self.color.upper()}')
+                return
             await bot.guilds[0].create_role(
                 name=role_name,
                 color=disnake.Color.from_rgb(rgb_color[0], rgb_color[1], rgb_color[2])
             )
+            for role in bot.guilds[0].roles:
+                if role.name == role_name:
+                    await bot.guilds[0].edit_role_positions(
+                        positions={role: len(bot.guilds[0].roles) - 2}
+                        )
+                    break
+            logger.info(f'Created color role {role_name}')
         for role in bot.guilds[0].roles:
             if role.name == role_name:
                 color_role = role
@@ -373,12 +413,25 @@ class ColorRoleView(disnake.ui.View):
             await inter.author.remove_roles(color_role)
             await inter.send(f"Role {bold(role_name)} removed.", ephemeral=True)
             logger.info(f'{inter.author} removed color role {role_name}')
+            if len(color_role.members) == 0:
+                await color_role.delete()
+                logger.info(f'Removed empty color role {role_name}')
             return
         else:
+            for role in inter.author.roles:
+                if str(role.name).startswith("Color: "):
+                    await inter.author.remove_roles(role)
+                    if len(role.members) == 0:
+                        await color_role.delete()
+                        logger.info(f'Removed empty color role {role_name}')
             await inter.author.add_roles(color_role)
             await inter.send(f"Role {bold(role_name)} added.", ephemeral=True)
             logger.info(f'{inter.author} added color role {role_name}')
             return
+
+@bot.slash_command()
+async def item(inter):
+    pass
 
 @item.sub_command()
 async def show(inter, item: str = commands.Param(autocomplete=autocomplete_items)):
@@ -390,9 +443,6 @@ async def show(inter, item: str = commands.Param(autocomplete=autocomplete_items
     item: The item to inspect.
     """
     logger.info(f'{inter.author} used /item show(item: {item})')
-    if not item:
-        await inter.response.send_message('You must choose an item to inspect.', ephemeral=True)
-        return
     user_data = ensure_user_data(inter.author)
     inventory = user_data[str(inter.author.id)]['inventory']
     inventory_item = next((search_item for search_item in inventory if search_item['name'] == item), None)
@@ -424,6 +474,54 @@ async def show(inter, item: str = commands.Param(autocomplete=autocomplete_items
         await inter.response.send_message(embed=item_show_embed, view=view, ephemeral=True)
         return
     await inter.response.send_message(embed=item_show_embed, ephemeral=True)
+
+@item.sub_command()
+async def send(
+    inter,
+    user: disnake.Member,
+    item: str = commands.Param(autocomplete=autocomplete_items),
+    ):
+    """
+    Send an item to another user.
+
+    Parameters
+    ----------
+    user: The user to send the item to.
+    item: The item to send.
+    """
+    logger.info(f'{inter.author} used /item send(user: {user.name} item: {item})')
+    user_data = ensure_user_data(user)
+    inventory = user_data[str(inter.author.id)]['inventory']
+    inventory_item = next((search_item for search_item in inventory if search_item['name'] == item), None)
+    if not inventory_item:
+        await inter.response.send_message(f"Could not find {bold(item)} in your inventory.", ephemeral=True)
+        logger.info(f"Could not find {item} in {inter.author}'s inventory")
+        return
+    if user.bot:
+        await inter.response.send_message(f"You can not send items to bots.", ephemeral=True)
+        logger.info(f'{inter.author} tried to send an item to a bot ({user.name})')
+        return
+    if user.id == inter.author.id:
+        await inter.response.send_message(f"You can not send items to yourself.", ephemeral=True)
+        logger.info(f'{inter.author} tried to send an item to themself')
+        return
+    if 'unique' in inventory_item['tags'].keys():
+        giftee_inventory = user_data[str(user.id)]['inventory']
+        giftee_inventory_item_names = []
+        for g_item in giftee_inventory:
+            giftee_inventory_item_names.append(g_item['name'])
+        if item in giftee_inventory_item_names:
+            await inter.response.send_message(f"{user.nick or user.global_name or user.name} already has {emoji(inventory_item['emoji'])} {bold(inventory_item['name'])}.", ephemeral=True)
+            logger.info(f'{inter.author} tried to send {item} to {user.name}, but they already have it')
+            return
+    user_data[str(inter.author.id)]['inventory'].remove(inventory_item)
+    user_data[str(user.id)]['inventory'].append(inventory_item)
+    save_user_data(user_data)
+    await inter.response.send_message(f"Sent {emoji(inventory_item['emoji'])} {bold(inventory_item['name'])} to {user.nick or user.global_name or user.name}.", ephemeral=True)
+    logger.info(f'{inter.author} sent {item} to {user.name}')
+    dm = user.dm_channel or await user.create_dm()
+    await dm.send(f"{inter.author.nick or inter.author.global_name or inter.author.name} ({inter.author.name}) sent you {emoji(inventory_item['emoji'])} {bold(inventory_item['name'])}!")
+    return
 
 @bot.slash_command()
 async def store(inter):
