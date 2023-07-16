@@ -35,8 +35,9 @@ if os.path.exists(secrets_file):
             secrets = json.load(file)
         bot_token = secrets['bot_token']
         guild_id = secrets['guild_id']
-        # mod_role_id = secrets['mod_role_id']
         general_chanel = secrets['general_chanel']
+        steam_api_key = secrets['steam_api_key']
+        news_channel = secrets['news_channel']
 else:
     error_msg = f'Could not find {secrets_file}'
     logger.error(error_msg)
@@ -140,22 +141,18 @@ async def ticket(inter):
     pass
 
 @ticket.sub_command()
-async def balance(inter, quiet: bool = False):
+async def balance(inter):
     """
     Displays your ticket balance, and how many you've earned.
-
-    Parameters
-    ----------
-    quiet: Hides the reponse, so only you can see it.
     """
-    logger.info(f'{inter.author} used /ticket balance(quiet: {quiet})')
+    logger.info(f'{inter.author} used /ticket balance()')
     user_data = ensure_user_data(inter.author)
     tickets = user_data[str(inter.author.id)]['tickets']
     tickets_earned = user_data[str(inter.author.id)]['tickets_earned']
-    await inter.response.send_message(f"You have a balance of {tickets} {emoji('ArcadeTicket')} and have earned {tickets_earned} {emoji('ArcadeTicket')}.", ephemeral=quiet)
+    await inter.response.send_message(f"You have a balance of {tickets} {emoji('ArcadeTicket')} and have earned {tickets_earned} {emoji('ArcadeTicket')}.", ephemeral=True)
 
 @ticket.sub_command()
-async def leaderboard(inter, quiet: bool = False):
+async def leaderboard(inter, quiet: bool = True):
     """
     Displays how many tickets everyone has earned.
 
