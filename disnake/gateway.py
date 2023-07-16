@@ -1,27 +1,4 @@
-"""
-The MIT License (MIT)
-
-Copyright (c) 2015-2021 Rapptz
-Copyright (c) 2021-present Disnake Development
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the "Software"),
-to deal in the Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the
-Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-"""
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
@@ -47,7 +24,6 @@ from typing import (
     NamedTuple,
     Optional,
     Protocol,
-    Type,
     TypeVar,
     Union,
 )
@@ -57,9 +33,11 @@ import aiohttp
 from . import utils
 from .activity import BaseActivity
 from .enums import SpeakingState
-from .errors import ConnectionClosed, InvalidArgument
+from .errors import ConnectionClosed
 
 if TYPE_CHECKING:
+    from typing_extensions import Self
+
     from .client import Client
     from .state import ConnectionState
     from .types.gateway import (
@@ -82,11 +60,15 @@ if TYPE_CHECKING:
     from .voice_client import VoiceClient
 
     T = TypeVar("T")
-    WebSocketT = TypeVar("WebSocketT", bound="DiscordWebSocket")
-    VoiceWebSocketT = TypeVar("VoiceWebSocketT", bound="DiscordVoiceWebSocket")
 
     class DispatchFunc(Protocol):
         def __call__(self, event: str, *args: Any) -> None:
+            ...
+
+    class GatewayErrorFunc(Protocol):
+        async def __call__(
+            self, event: str, data: Any, shard_id: Optional[int], exc: Exception, /
+        ) -> None:
             ...
 
     class CallHooksFunc(Protocol):
@@ -112,7 +94,7 @@ __all__ = (
 class ReconnectWebSocket(Exception):
     """Signals to safely reconnect the websocket."""
 
-    def __init__(self, shard_id: Optional[int], *, resume: bool = True):
+    def __init__(self, shard_id: Optional[int], *, resume: bool = True) -> None:
         self.shard_id = shard_id
         self.resume = resume
         self.op = "RESUME" if resume else "IDENTIFY"
@@ -131,7 +113,7 @@ class EventListener(NamedTuple):
 
 class GatewayRatelimiter:
     # The default is 110 to give room for at least 10 heartbeats per minute
-    def __init__(self, count: int = 110, per: float = 60.0):
+    def __init__(self, count: int = 110, per: float = 60.0) -> None:
         # maximum number of commands per interval (`self.per`)
         self.max: int = count
         # interval length in seconds
@@ -166,12 +148,8 @@ class GatewayRatelimiter:
         if self.remaining == 0:
             return self.per - (current - self.window)
 
+        # subtract one command in current window, return no delay
         self.remaining -= 1
-        # TODO: these two lines don't seem to be required; adds a delay of 60 seconds when the
-        # limit is exhausted, instead of just waiting for the current 60 seconds to be over
-        if self.remaining == 0:
-            self.window = current
-
         return 0.0
 
     async def block(self) -> None:
@@ -194,7 +172,7 @@ class KeepAliveHandler(threading.Thread):
         interval: float,
         shard_id: Optional[int] = None,
         **kwargs: Any,
-    ):
+    ) -> None:
         super().__init__(*args, **kwargs)
         self.ws: HeartbeatWebSocket = ws
         self._main_thread_id: int = ws.thread_id
@@ -227,7 +205,7 @@ class KeepAliveHandler(threading.Thread):
                     _log.exception("An error occurred while stopping the gateway. Ignoring.")
                 finally:
                     self.stop()
-                    return
+                    return  # noqa: B012
 
             data = self.get_payload()
             _log.debug(self.msg, self.shard_id, data["d"])
@@ -246,10 +224,11 @@ class KeepAliveHandler(threading.Thread):
                             frame = sys._current_frames()[self._main_thread_id]
                         except KeyError:
                             msg = self.block_msg
+                            _log.warning(msg, self.shard_id, total)
                         else:
                             stack = "".join(traceback.format_stack(frame))
-                            msg = f"{self.block_msg}\nLoop thread traceback (most recent call last):\n{stack}"
-                        _log.warning(msg, self.shard_id, total)
+                            msg = f"{self.block_msg}\nLoop thread traceback (most recent call last):\n%s"
+                            _log.warning(msg, self.shard_id, total, stack)
 
             except Exception:
                 self.stop()
@@ -274,7 +253,7 @@ class KeepAliveHandler(threading.Thread):
 
 
 class VoiceKeepAliveHandler(KeepAliveHandler):
-    def __init__(self, *args: Any, ws: HeartbeatWebSocket, interval: float, **kwargs: Any):
+    def __init__(self, *args: Any, ws: HeartbeatWebSocket, interval: float, **kwargs: Any) -> None:
         super().__init__(*args, ws=ws, interval=interval, **kwargs)
         self.recent_ack_latencies: Deque[float] = deque(maxlen=20)
         self.msg = "Keeping shard ID %s voice websocket alive with timestamp %s."
@@ -312,7 +291,7 @@ class HeartbeatWebSocket(Protocol):
 
 
 class DiscordWebSocket:
-    """Implements a WebSocket for Discord's gateway v9.
+    """Implements a WebSocket for Discord's gateway v10.
 
     Attributes
     ----------
@@ -365,12 +344,15 @@ class DiscordWebSocket:
     HEARTBEAT_ACK: Final[Literal[11]] = 11
     GUILD_SYNC: Final[Literal[12]] = 12
 
-    def __init__(self, socket: aiohttp.ClientWebSocketResponse, *, loop: asyncio.AbstractEventLoop):
+    def __init__(
+        self, socket: aiohttp.ClientWebSocketResponse, *, loop: asyncio.AbstractEventLoop
+    ) -> None:
         self.socket: aiohttp.ClientWebSocketResponse = socket
         self.loop: asyncio.AbstractEventLoop = loop
 
         # an empty dispatcher to prevent crashes
-        self._dispatch: DispatchFunc = lambda *args: None
+        self._dispatch: DispatchFunc = lambda event, *args: None
+        self._dispatch_gateway_error: Optional[GatewayErrorFunc] = None
         # generic event listeners
         self._dispatch_listeners: List[EventListener] = []
         # the keep alive
@@ -380,6 +362,8 @@ class DiscordWebSocket:
         # ws related stuff
         self.session_id: Optional[str] = None
         self.sequence: Optional[int] = None
+        # this may or may not include url parameters, we only need the host part of the url anyway
+        self.resume_gateway: Optional[str] = None
         self._zlib: zlib._Decompress = zlib.decompressobj()
         self._buffer: bytearray = bytearray()
         self._close_code: Optional[int] = None
@@ -411,7 +395,7 @@ class DiscordWebSocket:
 
     @classmethod
     async def from_client(
-        cls: Type[WebSocketT],
+        cls,
         client: Client,
         *,
         initial: bool = False,
@@ -420,12 +404,21 @@ class DiscordWebSocket:
         session: Optional[str] = None,
         sequence: Optional[int] = None,
         resume: bool = False,
-    ) -> WebSocketT:
+    ) -> Self:
         """Creates a main websocket for Discord from a :class:`Client`.
 
         This is for internal use only.
         """
-        gateway = gateway or await client.http.get_gateway()
+        params = client.gateway_params
+        if gateway:
+            gateway = client.http._format_gateway_url(
+                gateway,
+                encoding=params.encoding,
+                zlib=params.zlib,
+            )
+        else:
+            gateway = await client.http.get_gateway(encoding=params.encoding, zlib=params.zlib)
+
         socket = await client.http.ws_connect(gateway)
         ws = cls(socket, loop=client.loop)
 
@@ -435,6 +428,7 @@ class DiscordWebSocket:
         ws._discord_parsers = client._connection.parsers
         ws._dispatch = client.dispatch
         ws.gateway = gateway
+        ws.resume_gateway = gateway
         ws.call_hooks = client._connection.call_hooks
         ws._initial_identify = initial
         ws.shard_id = shard_id
@@ -447,6 +441,9 @@ class DiscordWebSocket:
         if client._enable_debug_events:
             ws.send = ws.debug_send
             ws.log_receive = ws.debug_log_receive
+
+        if client._enable_gateway_error_handler:
+            ws._dispatch_gateway_error = client._dispatch_gateway_error
 
         client._connection._update_references(ws)
 
@@ -486,7 +483,6 @@ class DiscordWebSocket:
         asyncio.Future
             A future to wait for.
         """
-
         future = self.loop.create_future()
         entry = EventListener(event=event, predicate=predicate, result=result, future=future)
         self._dispatch_listeners.append(entry)
@@ -494,7 +490,6 @@ class DiscordWebSocket:
 
     async def identify(self) -> None:
         """Sends the IDENTIFY packet."""
-
         state = self._connection
 
         payload: IdentifyCommand = {
@@ -502,11 +497,10 @@ class DiscordWebSocket:
             "d": {
                 "token": self.token,
                 "properties": {
-                    "$os": sys.platform,
-                    "$browser": "disnake",
-                    "$device": "disnake",
+                    "os": sys.platform,
+                    "browser": "disnake",
+                    "device": "disnake",
                 },
-                "compress": True,
                 "large_threshold": 250,
                 "intents": state._intents.value,
             },
@@ -607,6 +601,7 @@ class DiscordWebSocket:
 
                 self.sequence = None
                 self.session_id = None
+                self.resume_gateway = None
                 _log.info("Shard ID %s session has been invalidated.", self.shard_id)
                 await self.close(code=1000)
                 raise ReconnectWebSocket(self.shard_id, resume=False)
@@ -618,13 +613,15 @@ class DiscordWebSocket:
             self._trace = trace = data.get("_trace", [])
             self.sequence = seq
             self.session_id = data["session_id"]
+            self.resume_gateway = data["resume_gateway_url"]
             # pass back shard ID to ready handler
             data["__shard_id__"] = self.shard_id
             _log.info(
-                "Shard ID %s has connected to Gateway: %s (Session ID: %s).",
+                "Shard ID %s has connected to Gateway: %s (Session ID: %s, Resume URL: %s).",
                 self.shard_id,
                 ", ".join(trace),
                 self.session_id,
+                self.resume_gateway,
             )
 
         elif event == "RESUMED":
@@ -643,7 +640,20 @@ class DiscordWebSocket:
         except KeyError:
             _log.debug("Unknown event %s.", event)
         else:
-            func(data)
+            try:
+                func(data)
+            except Exception as e:
+                if self._dispatch_gateway_error is None:
+                    # error handler disabled, raise immediately
+                    raise
+
+                if event in {"READY", "RESUMED"}:  # exceptions in these events are fatal
+                    raise
+
+                event_name: str = event  # type: ignore  # event can't be None here
+                asyncio.create_task(
+                    self._dispatch_gateway_error(event_name, data, self.shard_id, e)
+                )
 
         # remove the dispatched listeners
         removed: List[int] = []
@@ -758,7 +768,7 @@ class DiscordWebSocket:
     ) -> None:
         if activity is not None:
             if not isinstance(activity, BaseActivity):
-                raise InvalidArgument("activity must derive from BaseActivity.")
+                raise TypeError("activity must derive from BaseActivity.")
             activity_data = (activity.to_dict(),)
         else:
             activity_data = ()
@@ -882,7 +892,7 @@ class DiscordVoiceWebSocket:
         loop: asyncio.AbstractEventLoop,
         *,
         hook: Optional[HookFunc] = None,
-    ):
+    ) -> None:
         self.ws: aiohttp.ClientWebSocketResponse = socket
         self.loop: asyncio.AbstractEventLoop = loop
         self._keep_alive: Optional[VoiceKeepAliveHandler] = None
@@ -890,7 +900,7 @@ class DiscordVoiceWebSocket:
         self.secret_key: Optional[List[int]] = None
         self.thread_id: int = threading.get_ident()
         if hook:
-            self._hook = hook  # type: ignore
+            self._hook = hook
 
         # set in `from_client`
         self.gateway: str
@@ -921,7 +931,7 @@ class DiscordVoiceWebSocket:
         }
         await self.send_as_json(payload)
 
-    async def identify(self):
+    async def identify(self) -> None:
         state = self._connection
         payload: VoiceIdentifyCommand = {
             "op": self.IDENTIFY,
@@ -936,14 +946,14 @@ class DiscordVoiceWebSocket:
 
     @classmethod
     async def from_client(
-        cls: Type[VoiceWebSocketT],
+        cls,
         client: VoiceClient,
         *,
         resume: bool = False,
         hook: Optional[HookFunc] = None,
-    ) -> VoiceWebSocketT:
+    ) -> Self:
         """Creates a voice websocket for the :class:`VoiceClient`."""
-        gateway = "wss://" + client.endpoint + "/?v=4"
+        gateway = f"wss://{client.endpoint}/?v=4"
         http = client._state.http
         socket = await http.ws_connect(gateway, compress=15)
         ws = cls(socket, loop=client.loop, hook=hook)
@@ -1011,16 +1021,16 @@ class DiscordVoiceWebSocket:
         state.voice_port = data["port"]
         state.endpoint_ip = data["ip"]
 
-        packet = bytearray(70)
+        packet = bytearray(74)
         struct.pack_into(">H", packet, 0, 1)  # 1 = Send
         struct.pack_into(">H", packet, 2, 70)  # 70 = Length
         struct.pack_into(">I", packet, 4, state.ssrc)
         state.socket.sendto(packet, (state.endpoint_ip, state.voice_port))
-        recv = await self.loop.sock_recv(state.socket, 70)
+        recv = await self.loop.sock_recv(state.socket, 74)
         _log.debug("received packet in initial_connection: %s", recv)
 
-        # the ip is ascii starting at the 4th byte and ending at the first null
-        ip_start = 4
+        # the ip is ascii starting at the 8th byte and ending at the first null
+        ip_start = 8
         ip_end = recv.index(0, ip_start)
         state.ip = recv[ip_start:ip_end].decode("ascii")
 
@@ -1055,7 +1065,7 @@ class DiscordVoiceWebSocket:
     async def load_secret_key(self, data: VoiceSessionDescriptionPayload) -> None:
         _log.info("received secret key for voice connection")
         self.secret_key = self._connection.secret_key = data["secret_key"]
-        await self.speak()
+        # need to send this at least once to set the ssrc
         await self.speak(False)
 
     async def poll_event(self) -> None:
@@ -1065,14 +1075,14 @@ class DiscordVoiceWebSocket:
             await self.received_message(utils._from_json(msg.data))
         elif msg.type is aiohttp.WSMsgType.ERROR:
             _log.debug("Received %s", msg)
-            raise ConnectionClosed(self.ws, shard_id=None) from msg.data
+            raise ConnectionClosed(self.ws, shard_id=None, voice=True) from msg.data
         elif msg.type in (
             aiohttp.WSMsgType.CLOSED,
             aiohttp.WSMsgType.CLOSE,
             aiohttp.WSMsgType.CLOSING,
         ):
             _log.debug("Received %s", msg)
-            raise ConnectionClosed(self.ws, shard_id=None, code=self._close_code)
+            raise ConnectionClosed(self.ws, shard_id=None, code=self._close_code, voice=True)
 
     async def close(self, code: int = 1000) -> None:
         if self._keep_alive is not None:

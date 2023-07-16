@@ -1,27 +1,4 @@
-"""
-The MIT License (MIT)
-
-Copyright (c) 2015-2021 Rapptz
-Copyright (c) 2021-present Disnake Development
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the "Software"),
-to deal in the Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the
-Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-"""
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
@@ -29,15 +6,12 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 if TYPE_CHECKING:
     from aiohttp import ClientResponse, ClientWebSocketResponse
+    from requests import Response
 
-    try:
-        from requests import Response
-
-        _ResponseType = Union[ClientResponse, Response]
-    except ModuleNotFoundError:
-        _ResponseType = ClientResponse
-
+    from .client import SessionStartLimit
     from .interactions import Interaction, ModalInteraction
+
+    _ResponseType = Union[ClientResponse, Response]
 
 __all__ = (
     "DiscordException",
@@ -49,8 +23,9 @@ __all__ = (
     "NotFound",
     "DiscordServerError",
     "InvalidData",
-    "InvalidArgument",
+    "WebhookTokenMissing",
     "LoginFailure",
+    "SessionStartLimitReached",
     "ConnectionClosed",
     "PrivilegedIntentsRequired",
     "InteractionException",
@@ -58,11 +33,13 @@ __all__ = (
     "InteractionResponded",
     "InteractionNotResponded",
     "ModalChainNotSupported",
+    "InteractionNotEditable",
+    "LocalizationKeyError",
 )
 
 
 class DiscordException(Exception):
-    """Base exception class for disnake
+    """Base exception class for disnake.
 
     Ideally speaking, this could be caught to handle any exceptions raised from this library.
     """
@@ -96,7 +73,7 @@ class GatewayNotFound(DiscordException):
 def _flatten_error_dict(d: Dict[str, Any], key: str = "") -> Dict[str, str]:
     items: List[Tuple[str, str]] = []
     for k, v in d.items():
-        new_key = key + "." + k if key else k
+        new_key = f"{key}.{k}" if key else k
 
         if isinstance(v, dict):
             try:
@@ -129,7 +106,9 @@ class HTTPException(DiscordException):
         The Discord specific error code for the failure.
     """
 
-    def __init__(self, response: _ResponseType, message: Optional[Union[str, Dict[str, Any]]]):
+    def __init__(
+        self, response: _ResponseType, message: Optional[Union[str, Dict[str, Any]]]
+    ) -> None:
         self.response: _ResponseType = response
         self.status: int = response.status  # type: ignore
         self.code: int
@@ -140,7 +119,7 @@ class HTTPException(DiscordException):
             errors = message.get("errors")
             if errors:
                 errors = _flatten_error_dict(errors)
-                helpful = "\n".join("In %s: %s" % t for t in errors.items())
+                helpful = "\n".join(f"In {k}: {m}" for k, m in errors.items())
                 self.text = base + "\n" + helpful
             else:
                 self.text = base
@@ -158,7 +137,7 @@ class HTTPException(DiscordException):
 class Forbidden(HTTPException):
     """Exception that's raised for when status code 403 occurs.
 
-    Subclass of :exc:`HTTPException`
+    Subclass of :exc:`HTTPException`.
     """
 
     pass
@@ -167,7 +146,7 @@ class Forbidden(HTTPException):
 class NotFound(HTTPException):
     """Exception that's raised for when status code 404 occurs.
 
-    Subclass of :exc:`HTTPException`
+    Subclass of :exc:`HTTPException`.
     """
 
     pass
@@ -192,13 +171,10 @@ class InvalidData(ClientException):
     pass
 
 
-class InvalidArgument(ClientException):
-    """Exception that's raised when an argument to a function
-    is invalid some way (e.g. wrong value or wrong type).
+class WebhookTokenMissing(DiscordException):
+    """Exception that's raised when a :class:`Webhook` or :class:`SyncWebhook` is missing a token to make requests with.
 
-    This could be considered the analogous of ``ValueError`` and
-    ``TypeError`` except inherited from :exc:`ClientException` and thus
-    :exc:`DiscordException`.
+    .. versionadded:: 2.6
     """
 
     pass
@@ -211,6 +187,27 @@ class LoginFailure(ClientException):
     """
 
     pass
+
+
+class SessionStartLimitReached(ClientException):
+    """Exception that's raised when :meth:`Client.connect` function
+    fails to connect to Discord due to the session start limit being reached.
+
+    .. versionadded:: 2.6
+
+    Attributes
+    ----------
+    session_start_limit: :class:`.SessionStartLimit`
+        The current state of the session start limit.
+
+    """
+
+    def __init__(self, session_start_limit: SessionStartLimit, requested: int = 1) -> None:
+        self.session_start_limit: SessionStartLimit = session_start_limit
+        super().__init__(
+            f"Daily session start limit has been reached, resets at {self.session_start_limit.reset_time} "
+            f"Requested {requested} shards, have only {session_start_limit.remaining} remaining."
+        )
 
 
 class ConnectionClosed(ClientException):
@@ -227,20 +224,56 @@ class ConnectionClosed(ClientException):
         The shard ID that got closed if applicable.
     """
 
+    # https://discord.com/developers/docs/topics/opcodes-and-status-codes#gateway-gateway-close-event-codes
+    GATEWAY_CLOSE_EVENT_REASONS: Dict[int, str] = {
+        4000: "Unknown error",
+        4001: "Unknown opcode",
+        4002: "Decode error",
+        4003: "Not authenticated",
+        4004: "Authentication failed",
+        4005: "Already authenticated",
+        4007: "Invalid sequence",
+        4008: "Rate limited",
+        4009: "Session timed out",
+        4010: "Invalid Shard",
+        4011: "Sharding required - you are required to shard your connection in order to connect.",
+        4012: "Invalid API version",
+        4013: "Invalid intents",
+        4014: "Disallowed intents - you tried to specify an intent that you have not enabled or are not approved for.",
+    }
+
+    # https://discord.com/developers/docs/topics/opcodes-and-status-codes#voice-voice-close-event-codes
+    GATEWAY_VOICE_CLOSE_EVENT_REASONS: Dict[int, str] = {
+        **GATEWAY_CLOSE_EVENT_REASONS,
+        4002: "Failed to decode payload",
+        4006: "Session no longer valid",
+        4011: "Server not found",
+        4012: "Unknown protocol",
+        4014: "Disconnected, channel was deleted, you were kicked, voice server changed, or the main gateway session was dropped.",
+        4015: "Voice server crashed",
+        4016: "Unknown encryption mode",
+    }
+
     def __init__(
         self,
         socket: ClientWebSocketResponse,
         *,
         shard_id: Optional[int],
         code: Optional[int] = None,
-    ):
+        voice: bool = False,
+    ) -> None:
         # This exception is just the same exception except
         # reconfigured to subclass ClientException for users
         self.code: int = code or socket.close_code or -1
         # aiohttp doesn't seem to consistently provide close reason
-        self.reason: str = ""
+        self.reason: str = self.GATEWAY_CLOSE_EVENT_REASONS.get(self.code, "Unknown reason")
+        if voice:
+            self.reason = self.GATEWAY_VOICE_CLOSE_EVENT_REASONS.get(self.code, "Unknown reason")
+
         self.shard_id: Optional[int] = shard_id
-        super().__init__(f"Shard ID {self.shard_id} WebSocket closed with {self.code}")
+        super().__init__(
+            f"Shard ID {self.shard_id} WebSocket closed with {self.code}: {self.reason}"
+        )
 
 
 class PrivilegedIntentsRequired(ClientException):
@@ -252,6 +285,7 @@ class PrivilegedIntentsRequired(ClientException):
 
     - :attr:`Intents.members`
     - :attr:`Intents.presences`
+    - :attr:`Intents.message_content`
 
     Attributes
     ----------
@@ -259,15 +293,15 @@ class PrivilegedIntentsRequired(ClientException):
         The shard ID that got closed if applicable.
     """
 
-    def __init__(self, shard_id: Optional[int]):
+    def __init__(self, shard_id: Optional[int]) -> None:
         self.shard_id: Optional[int] = shard_id
         msg = (
-            "Shard ID %s is requesting privileged intents that have not been explicitly enabled in the "
+            f"Shard ID {shard_id} is requesting privileged intents that have not been explicitly enabled in the "
             "developer portal. It is recommended to go to https://discord.com/developers/applications/ "
             "and explicitly enable the privileged intents within your application's page. If this is not "
             "possible, then consider disabling the privileged intents instead."
         )
-        super().__init__(msg % shard_id)
+        super().__init__(msg)
 
 
 class InteractionException(ClientException):
@@ -278,7 +312,7 @@ class InteractionException(ClientException):
     Attributes
     ----------
     interaction: :class:`Interaction`
-        The interaction that was responded to
+        The interaction that was responded to.
     """
 
     interaction: Interaction
@@ -286,24 +320,24 @@ class InteractionException(ClientException):
 
 class InteractionTimedOut(InteractionException):
     """Exception that's raised when an interaction takes more than 3 seconds
-    to respond but is not deffered.
+    to respond but is not deferred.
 
     .. versionadded:: 2.0
 
     Attributes
     ----------
     interaction: :class:`Interaction`
-        The interaction that was responded to
+        The interaction that was responded to.
     """
 
-    def __init__(self, interaction: Interaction):
+    def __init__(self, interaction: Interaction) -> None:
         self.interaction: Interaction = interaction
 
         msg = (
             "Interaction took more than 3 seconds to be responded to. "
             'Please defer it using "interaction.response.defer" on the start of your command. '
             "Later you may send a response by editing the deferred message "
-            'using "interaction.edit_original_message"'
+            'using "interaction.edit_original_response"'
             "\n"
             "Note: This might also be caused by a misconfiguration in the components "
             "make sure you do not respond twice in case this is a component."
@@ -315,7 +349,7 @@ class InteractionResponded(InteractionException):
     """Exception that's raised when sending another interaction response using
     :class:`InteractionResponse` when one has already been done before.
 
-    An interaction can only respond once.
+    An interaction can only be responded to once.
 
     .. versionadded:: 2.0
 
@@ -325,7 +359,7 @@ class InteractionResponded(InteractionException):
         The interaction that's already been responded to.
     """
 
-    def __init__(self, interaction: Interaction):
+    def __init__(self, interaction: Interaction) -> None:
         self.interaction: Interaction = interaction
         super().__init__("This interaction has already been responded to before")
 
@@ -334,17 +368,17 @@ class InteractionNotResponded(InteractionException):
     """Exception that's raised when editing an interaction response without
     sending a response message first.
 
-    An interaction can only respond once.
+    An interaction must be responded to exactly once.
 
     .. versionadded:: 2.0
 
     Attributes
     ----------
     interaction: :class:`Interaction`
-        The interaction that's already been responded to.
+        The interaction that hasn't been responded to.
     """
 
-    def __init__(self, interaction: Interaction):
+    def __init__(self, interaction: Interaction) -> None:
         self.interaction: Interaction = interaction
         super().__init__("This interaction hasn't been responded to yet")
 
@@ -360,6 +394,39 @@ class ModalChainNotSupported(InteractionException):
         The interaction that was responded to.
     """
 
-    def __init__(self, interaction: ModalInteraction):
+    def __init__(self, interaction: ModalInteraction) -> None:
         self.interaction: ModalInteraction = interaction
         super().__init__("You cannot respond to a modal with another modal.")
+
+
+class InteractionNotEditable(InteractionException):
+    """Exception that's raised when trying to use :func:`InteractionResponse.edit_message`
+    on an interaction without an associated message (which is thus non-editable).
+
+    .. versionadded:: 2.5
+
+    Attributes
+    ----------
+    interaction: :class:`Interaction`
+        The interaction that was responded to.
+    """
+
+    def __init__(self, interaction: Interaction) -> None:
+        self.interaction: Interaction = interaction
+        super().__init__("This interaction does not have a message to edit.")
+
+
+class LocalizationKeyError(DiscordException):
+    """Exception that's raised when a localization key lookup fails.
+
+    .. versionadded:: 2.5
+
+    Attributes
+    ----------
+    key: :class:`str`
+        The localization key that couldn't be found.
+    """
+
+    def __init__(self, key: str) -> None:
+        self.key: str = key
+        super().__init__(f"No localizations were found for the key '{key}'.")

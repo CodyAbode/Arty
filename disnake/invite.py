@@ -1,38 +1,17 @@
-"""
-The MIT License (MIT)
-
-Copyright (c) 2015-2021 Rapptz
-Copyright (c) 2021-present Disnake Development
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the "Software"),
-to deal in the Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the
-Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-"""
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Optional, Type, TypeVar, Union
+from typing import TYPE_CHECKING, List, Optional, Union
 
 from .appinfo import PartialAppInfo
 from .asset import Asset
 from .enums import ChannelType, InviteTarget, NSFWLevel, VerificationLevel, try_enum
+from .guild_scheduled_event import GuildScheduledEvent
 from .mixins import Hashable
 from .object import Object
-from .utils import _get_as_snowflake, parse_time, snowflake_time, warn_deprecated
+from .utils import _get_as_snowflake, parse_time, snowflake_time
+from .welcome_screen import WelcomeScreen
 
 __all__ = (
     "PartialInviteChannel",
@@ -41,22 +20,25 @@ __all__ = (
 )
 
 if TYPE_CHECKING:
+    import datetime
+
+    from typing_extensions import Self
+
     from .abc import GuildChannel
     from .guild import Guild
     from .state import ConnectionState
-    from .types.channel import PartialChannel as InviteChannelPayload
-    from .types.guild import GuildFeature
-    from .types.invite import (
-        GatewayInvite as GatewayInvitePayload,
-        Invite as InvitePayload,
-        InviteGuild as InviteGuildPayload,
+    from .types.channel import (
+        GroupInviteRecipient as GroupInviteRecipientPayload,
+        InviteChannel as InviteChannelPayload,
     )
+    from .types.gateway import InviteCreateEvent, InviteDeleteEvent
+    from .types.guild import GuildFeature
+    from .types.invite import Invite as InvitePayload, InviteGuild as InviteGuildPayload
     from .user import User
 
+    GatewayInvitePayload = Union[InviteCreateEvent, InviteDeleteEvent]
     InviteGuildType = Union[Guild, "PartialInviteGuild", Object]
     InviteChannelType = Union[GuildChannel, "PartialInviteChannel", Object]
-
-    import datetime
 
 
 class PartialInviteChannel:
@@ -64,6 +46,7 @@ class PartialInviteChannel:
 
     This model will be given when the user is not part of the
     guild the :class:`Invite` resolves to.
+
 
     .. container:: operations
 
@@ -83,9 +66,13 @@ class PartialInviteChannel:
 
             Returns the partial channel's name.
 
+            .. versionchanged:: 2.5
+                if the channel is of type :attr:`ChannelType.group`,
+                returns the name that's rendered by the official client.
+
     Attributes
     ----------
-    name: :class:`str`
+    name: Optional[:class:`str`]
         The partial channel's name.
     id: :class:`int`
         The partial channel's ID.
@@ -93,15 +80,32 @@ class PartialInviteChannel:
         The partial channel's type.
     """
 
-    __slots__ = ("id", "name", "type")
+    __slots__ = (
+        "id",
+        "name",
+        "type",
+        "_recipients",
+        "_icon",
+        "_state",
+    )
 
-    def __init__(self, data: InviteChannelPayload):
+    def __init__(self, *, state: ConnectionState, data: InviteChannelPayload) -> None:
+        self._state = state
         self.id: int = int(data["id"])
-        self.name: str = data["name"]
+        self.name: Optional[str] = data.get("name")
         self.type: ChannelType = try_enum(ChannelType, data["type"])
+        if self.type is ChannelType.group:
+            self._recipients: List[GroupInviteRecipientPayload] = data.get("recipients", [])
+        else:
+            self._recipients = []
+        self._icon: Optional[str] = data.get("icon")
 
     def __str__(self) -> str:
-        return self.name
+        if self.name:
+            return self.name
+        if self.type is ChannelType.group:
+            return ", ".join([recipient["username"] for recipient in self._recipients]) or "Unnamed"
+        return ""
 
     def __repr__(self) -> str:
         return f"<PartialInviteChannel id={self.id} name={self.name} type={self.type!r}>"
@@ -115,6 +119,16 @@ class PartialInviteChannel:
     def created_at(self) -> datetime.datetime:
         """:class:`datetime.datetime`: Returns the channel's creation time in UTC."""
         return snowflake_time(self.id)
+
+    @property
+    def icon(self) -> Optional[Asset]:
+        """Optional[:class:`Asset`]: Returns the channel's icon asset if available.
+
+        .. versionadded:: 2.6
+        """
+        if self._icon is None:
+            return None
+        return Asset._from_icon(self._state, self.id, self._icon, path="channel")
 
 
 class PartialInviteGuild:
@@ -163,6 +177,10 @@ class PartialInviteGuild:
 
     verification_level: :class:`VerificationLevel`
         The partial guild's verification level.
+    premium_subscription_count: :class:`int`
+        The number of "boosts" this guild currently has.
+
+        .. versionadded:: 2.5
     """
 
     __slots__ = (
@@ -177,9 +195,10 @@ class PartialInviteGuild:
         "nsfw_level",
         "vanity_url_code",
         "verification_level",
+        "premium_subscription_count",
     )
 
-    def __init__(self, state: ConnectionState, data: InviteGuildPayload, id: int):
+    def __init__(self, state: ConnectionState, data: InviteGuildPayload, id: int) -> None:
         self._state: ConnectionState = state
         self.id: int = id
         self.name: str = data["name"]
@@ -193,6 +212,7 @@ class PartialInviteGuild:
             VerificationLevel, data.get("verification_level")
         )
         self.description: Optional[str] = data.get("description")
+        self.premium_subscription_count: int = data.get("premium_subscription_count") or 0
 
     def __str__(self) -> str:
         return self.name
@@ -230,15 +250,11 @@ class PartialInviteGuild:
         return Asset._from_guild_image(self._state, self.id, self._splash, path="splashes")
 
 
-I = TypeVar("I", bound="Invite")
-
-
 class Invite(Hashable):
-    """
-    Represents a Discord :class:`Guild` or :class:`abc.GuildChannel` invite.
+    """Represents a Discord :class:`Guild` or :class:`abc.GuildChannel` invite.
 
     Depending on the way this object was created, some of the attributes can
-    have a value of ``None``.
+    have a value of ``None`` (see table below).
 
     .. container:: operations
 
@@ -258,65 +274,83 @@ class Invite(Hashable):
 
             Returns the invite URL.
 
+    .. _invite_attr_table:
+
     The following table illustrates what methods will obtain the attributes:
 
-    +------------------------------------+-------------------------------------------------------------------+
-    |             Attribute              |                          Method                                   |
-    +====================================+===================================================================+
-    | :attr:`max_age`                    | :meth:`abc.GuildChannel.invites`\, :meth:`Guild.invites`          |
-    +------------------------------------+-------------------------------------------------------------------+
-    | :attr:`max_uses`                   | :meth:`abc.GuildChannel.invites`\, :meth:`Guild.invites`          |
-    +------------------------------------+-------------------------------------------------------------------+
-    | :attr:`created_at`                 | :meth:`abc.GuildChannel.invites`\, :meth:`Guild.invites`          |
-    +------------------------------------+-------------------------------------------------------------------+
-    | :attr:`temporary`                  | :meth:`abc.GuildChannel.invites`\, :meth:`Guild.invites`          |
-    +------------------------------------+-------------------------------------------------------------------+
-    | :attr:`uses`                       | :meth:`abc.GuildChannel.invites`\, :meth:`Guild.invites`          |
-    +------------------------------------+-------------------------------------------------------------------+
-    | :attr:`approximate_member_count`   | :meth:`Client.fetch_invite` with `with_counts` enabled            |
-    +------------------------------------+-------------------------------------------------------------------+
-    | :attr:`approximate_presence_count` | :meth:`Client.fetch_invite` with `with_counts` enabled            |
-    +------------------------------------+-------------------------------------------------------------------+
-    | :attr:`expires_at`                 | :meth:`Client.fetch_invite` with `with_expiration` enabled        |
-    +------------------------------------+-------------------------------------------------------------------+
-    | :attr:`guild_scheduled_event`      | :meth:`Client.fetch_invite` with valid `guild_scheduled_event_id` |
-    |                                    | or valid event ID in URL or invite object                         |
-    +------------------------------------+-------------------------------------------------------------------+
+    +------------------------------------+---------------------------------------------------------------------+
+    |             Attribute              |                          Method                                     |
+    +====================================+=====================================================================+
+    | :attr:`max_age`                    | :meth:`abc.GuildChannel.invites`\\, :meth:`Guild.invites`            |
+    +------------------------------------+---------------------------------------------------------------------+
+    | :attr:`max_uses`                   | :meth:`abc.GuildChannel.invites`\\, :meth:`Guild.invites`            |
+    +------------------------------------+---------------------------------------------------------------------+
+    | :attr:`created_at`                 | :meth:`abc.GuildChannel.invites`\\, :meth:`Guild.invites`            |
+    +------------------------------------+---------------------------------------------------------------------+
+    | :attr:`temporary`                  | :meth:`abc.GuildChannel.invites`\\, :meth:`Guild.invites`            |
+    +------------------------------------+---------------------------------------------------------------------+
+    | :attr:`uses`                       | :meth:`abc.GuildChannel.invites`\\, :meth:`Guild.invites`            |
+    +------------------------------------+---------------------------------------------------------------------+
+    | :attr:`approximate_member_count`   | :meth:`Client.fetch_invite` with ``with_counts`` enabled            |
+    +------------------------------------+---------------------------------------------------------------------+
+    | :attr:`approximate_presence_count` | :meth:`Client.fetch_invite` with ``with_counts`` enabled            |
+    +------------------------------------+---------------------------------------------------------------------+
+    | :attr:`expires_at`                 | :meth:`Client.fetch_invite` with ``with_expiration`` enabled        |
+    +------------------------------------+---------------------------------------------------------------------+
+    | :attr:`guild_scheduled_event`      | :meth:`Client.fetch_invite` with valid ``guild_scheduled_event_id`` |
+    |                                    | or valid event ID in URL or invite object                           |
+    +------------------------------------+---------------------------------------------------------------------+
 
-    If it's not in the table above then it is available by all methods.
+    If something is not in the table above, then it's available by all methods.
 
     Attributes
     ----------
-    max_age: :class:`int`
-        How long before the invite expires in seconds.
-        A value of ``0`` indicates that it doesn't expire.
     code: :class:`str`
         The URL fragment used for the invite.
     guild: Optional[Union[:class:`Guild`, :class:`Object`, :class:`PartialInviteGuild`]]
         The guild the invite is for. Can be ``None`` if it's from a group direct message.
-    created_at: :class:`datetime.datetime`
-        An aware UTC datetime object denoting the time the invite was created.
-    temporary: :class:`bool`
-        Whether the invite grants temporary membership.
-        If ``True``, members who joined via this invite will be kicked upon disconnect.
-    uses: :class:`int`
-        How many times the invite has been used.
-    max_uses: :class:`int`
+    max_age: Optional[:class:`int`]
+        How long before the invite expires in seconds.
+        A value of ``0`` indicates that it doesn't expire.
+
+        Optional according to the :ref:`table <invite_attr_table>` above.
+    max_uses: Optional[:class:`int`]
         How many times the invite can be used.
         A value of ``0`` indicates that it has unlimited uses.
-    inviter: Optional[:class:`User`]
-        The user who created the invite.
+
+        Optional according to the :ref:`table <invite_attr_table>` above.
+    created_at: Optional[:class:`datetime.datetime`]
+        An aware UTC datetime object denoting the time the invite was created.
+
+        Optional according to the :ref:`table <invite_attr_table>` above.
+    temporary: Optional[:class:`bool`]
+        Whether the invite grants temporary membership.
+        If ``True``, members who joined via this invite will be kicked upon disconnect.
+
+        Optional according to the :ref:`table <invite_attr_table>` above.
+    uses: Optional[:class:`int`]
+        How many times the invite has been used.
+
+        Optional according to the :ref:`table <invite_attr_table>` above.
     approximate_member_count: Optional[:class:`int`]
         The approximate number of members in the guild.
+
+        Optional according to the :ref:`table <invite_attr_table>` above.
     approximate_presence_count: Optional[:class:`int`]
         The approximate number of members currently active in the guild.
         This includes idle, dnd, online, and invisible members. Offline members are excluded.
+
+        Optional according to the :ref:`table <invite_attr_table>` above.
     expires_at: Optional[:class:`datetime.datetime`]
         The expiration date of the invite. If the value is ``None`` when received through
-        `Client.fetch_invite` with `with_expiration` enabled, the invite will never expire.
+        :meth:`Client.fetch_invite` with ``with_expiration`` enabled, the invite will never expire.
 
         .. versionadded:: 2.0
 
+    inviter: Optional[:class:`User`]
+        The user who created the invite, if any.
+
+        This is ``None`` in vanity invites, for example.
     channel: Optional[Union[:class:`abc.GuildChannel`, :class:`Object`, :class:`PartialInviteChannel`]]
         The channel the invite is for.
     target_type: :class:`InviteTarget`
@@ -338,6 +372,11 @@ class Invite(Hashable):
         The guild scheduled event included in the invite, if any.
 
         .. versionadded:: 2.3
+
+    guild_welcome_screen: Optional[:class:`WelcomeScreen`]
+        The partial guild's welcome screen, if any.
+
+        .. versionadded:: 2.5
     """
 
     __slots__ = (
@@ -357,7 +396,7 @@ class Invite(Hashable):
         "target_application",
         "expires_at",
         "guild_scheduled_event",
-        "_revoked",
+        "guild_welcome_screen",
         "_state",
     )
 
@@ -367,21 +406,21 @@ class Invite(Hashable):
         self,
         *,
         state: ConnectionState,
-        data: InvitePayload,
+        data: Union[InvitePayload, GatewayInvitePayload],
         guild: Optional[Union[PartialInviteGuild, Guild]] = None,
         channel: Optional[Union[PartialInviteChannel, GuildChannel]] = None,
-    ):
+    ) -> None:
         self._state: ConnectionState = state
-        self.max_age: Optional[int] = data.get("max_age")
         self.code: str = data["code"]
         self.guild: Optional[InviteGuildType] = self._resolve_guild(data.get("guild"), guild)
+
+        self.max_age: Optional[int] = data.get("max_age")
+        self.max_uses: Optional[int] = data.get("max_uses")
         self.created_at: Optional[datetime.datetime] = parse_time(data.get("created_at"))
         self.temporary: Optional[bool] = data.get("temporary")
         self.uses: Optional[int] = data.get("uses")
-        self.max_uses: Optional[int] = data.get("max_uses")
         self.approximate_presence_count: Optional[int] = data.get("approximate_presence_count")
         self.approximate_member_count: Optional[int] = data.get("approximate_member_count")
-        self._revoked: Optional[bool] = data.get("revoked")
 
         expires_at = data.get("expires_at", None)
         self.expires_at: Optional[datetime.datetime] = (
@@ -395,6 +434,21 @@ class Invite(Hashable):
             data.get("channel"), channel
         )
 
+        # this is stored here due to disnake.Guild not storing a welcome screen
+        # if it was stored on the Guild object, we would be throwing away this data from the api request
+        if (
+            self.guild is not None
+            and (guild_data := data.get("guild"))
+            and "welcome_screen" in guild_data
+        ):
+            self.guild_welcome_screen: Optional[WelcomeScreen] = WelcomeScreen(
+                state=self._state,
+                data=guild_data["welcome_screen"],
+                guild=self.guild,  # type: ignore
+            )
+        else:
+            self.guild_welcome_screen: Optional[WelcomeScreen] = None
+
         target_user_data = data.get("target_user")
         self.target_user: Optional[User] = None if target_user_data is None else self._state.create_user(target_user_data)  # type: ignore
 
@@ -405,15 +459,15 @@ class Invite(Hashable):
             PartialAppInfo(data=application, state=state) if application else None
         )
 
-        from .guild_scheduled_event import GuildScheduledEvent  # cyclic import
-
-        scheduled_event = data.get("guild_scheduled_event")
-        self.guild_scheduled_event: Optional[GuildScheduledEvent] = (
-            GuildScheduledEvent(state=state, data=scheduled_event) if scheduled_event else None
-        )
+        if scheduled_event := data.get("guild_scheduled_event"):
+            self.guild_scheduled_event: Optional[GuildScheduledEvent] = GuildScheduledEvent(
+                state=state, data=scheduled_event
+            )
+        else:
+            self.guild_scheduled_event: Optional[GuildScheduledEvent] = None
 
     @classmethod
-    def from_incomplete(cls: Type[I], *, state: ConnectionState, data: InvitePayload) -> I:
+    def from_incomplete(cls, *, state: ConnectionState, data: InvitePayload) -> Self:
         guild: Optional[Union[Guild, PartialInviteGuild]]
         try:
             guild_data = data["guild"]
@@ -427,9 +481,12 @@ class Invite(Hashable):
                 # If it's not cached, then it has to be a partial guild
                 guild = PartialInviteGuild(state, guild_data, guild_id)
 
+        # todo: this is no longer true
         # As far as I know, invites always need a channel
         # So this should never raise.
-        channel: Union[PartialInviteChannel, GuildChannel] = PartialInviteChannel(data["channel"])
+        channel: Union[PartialInviteChannel, GuildChannel] = PartialInviteChannel(
+            data=data["channel"], state=state
+        )
         if guild is not None and not isinstance(guild, PartialInviteGuild):
             # Upgrade the partial data if applicable
             channel = guild.get_channel(channel.id) or channel
@@ -437,17 +494,23 @@ class Invite(Hashable):
         return cls(state=state, data=data, guild=guild, channel=channel)
 
     @classmethod
-    def from_gateway(cls: Type[I], *, state: ConnectionState, data: GatewayInvitePayload) -> I:
+    def from_gateway(cls, *, state: ConnectionState, data: GatewayInvitePayload) -> Self:
         guild_id: Optional[int] = _get_as_snowflake(data, "guild_id")
         guild: Optional[Union[Guild, Object]] = state._get_guild(guild_id)
         channel_id = int(data["channel_id"])
         if guild is not None:
-            channel = guild.get_channel(channel_id) or Object(id=channel_id)  # type: ignore
+            channel = guild.get_channel(channel_id) or Object(id=channel_id)
         else:
             guild = Object(id=guild_id) if guild_id is not None else None
             channel = Object(id=channel_id)
 
-        return cls(state=state, data=data, guild=guild, channel=channel)  # type: ignore
+        return cls(
+            state=state,
+            data=data,
+            # objects may be partial due to missing cache
+            guild=guild,  # type: ignore
+            channel=channel,  # type: ignore
+        )
 
     def _resolve_guild(
         self,
@@ -474,7 +537,7 @@ class Invite(Hashable):
         if data is None:
             return None
 
-        return PartialInviteChannel(data)
+        return PartialInviteChannel(data=data, state=self._state)
 
     def __str__(self) -> str:
         return self.url
@@ -502,23 +565,7 @@ class Invite(Hashable):
             url += f"?event={self.guild_scheduled_event.id}"
         return url
 
-    @property
-    def revoked(self) -> Optional[bool]:
-        """Optional[:class:`bool`]: Whether the invite has been revoked.
-
-        As of September 16th, 2019, this value will always be ``None`` since Discord
-        doesn't provide this information anymore.
-
-        .. warning::
-
-            This property will be removed in a future version.
-        """
-        warn_deprecated(
-            "revoked is deprecated and will be removed in a future version.", stacklevel=2
-        )
-        return self._revoked
-
-    async def delete(self, *, reason: Optional[str] = None):
+    async def delete(self, *, reason: Optional[str] = None) -> None:
         """|coro|
 
         Revokes the instant invite.

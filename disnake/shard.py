@@ -1,38 +1,28 @@
-"""
-The MIT License (MIT)
-
-Copyright (c) 2015-2021 Rapptz
-Copyright (c) 2021-present Disnake Development
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the "Software"),
-to deal in the Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the
-Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-"""
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar
+from errno import ECONNRESET
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    List,
+    NoReturn,
+    Optional,
+    Tuple,
+    Type,
+    Union,
+    overload,
+)
 
 import aiohttp
 
 from .backoff import ExponentialBackoff
-from .client import Client
+from .client import Client, GatewayParams, SessionStartLimit
 from .enums import Status
 from .errors import (
     ClientException,
@@ -40,16 +30,18 @@ from .errors import (
     GatewayNotFound,
     HTTPException,
     PrivilegedIntentsRequired,
+    SessionStartLimitReached,
 )
-from .gateway import *
+from .gateway import DiscordWebSocket, ReconnectWebSocket
 from .state import AutoShardedConnectionState
 
 if TYPE_CHECKING:
-    from .activity import BaseActivity
-    from .enums import Status
-    from .gateway import DiscordWebSocket
+    from typing_extensions import Self
 
-    EI = TypeVar("EI", bound="EventItem")
+    from .activity import BaseActivity
+    from .flags import Intents, MemberCacheFlags
+    from .i18n import LocalizationProtocol
+    from .mentions import AllowedMentions
 
 __all__ = (
     "AutoShardedClient",
@@ -76,12 +68,12 @@ class EventItem:
         self.shard: Optional["Shard"] = shard
         self.error: Optional[Exception] = error
 
-    def __lt__(self: EI, other: EI) -> bool:
+    def __lt__(self, other: Self) -> bool:
         if not isinstance(other, EventItem):
             return NotImplemented
         return self.type < other.type
 
-    def __eq__(self: EI, other: EI) -> bool:
+    def __eq__(self, other: Self) -> bool:
         if not isinstance(other, EventItem):
             return NotImplemented
         return self.type == other.type
@@ -145,7 +137,7 @@ class Shard:
         if self._client.is_closed():
             return
 
-        if isinstance(e, OSError) and e.errno in (54, 10054):
+        if isinstance(e, OSError) and e.errno == ECONNRESET:
             # If we get Connection reset by peer then always try to RESUME the connection.
             exc = ReconnectWebSocket(self.id, resume=True)
             self._queue_put(EventItem(EventType.resume, self, exc))
@@ -195,6 +187,7 @@ class Shard:
                 shard_id=self.id,
                 session=self.ws.session_id,
                 sequence=self.ws.sequence,
+                gateway=self.ws.resume_gateway if exc.resume else None,
             )
             self.ws = await asyncio.wait_for(coro, timeout=60.0)
         except self._handled_exceptions as e:
@@ -331,12 +324,43 @@ class AutoShardedClient(Client):
     if TYPE_CHECKING:
         _connection: AutoShardedConnectionState
 
+    @overload
     def __init__(
-        self, *args: Any, loop: Optional[asyncio.AbstractEventLoop] = None, **kwargs: Any
+        self,
+        *,
+        asyncio_debug: bool = False,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+        shard_ids: Optional[List[int]] = None,  # instead of Client's shard_id: Optional[int]
+        shard_count: Optional[int] = None,
+        enable_debug_events: bool = False,
+        enable_gateway_error_handler: bool = True,
+        gateway_params: Optional[GatewayParams] = None,
+        connector: Optional[aiohttp.BaseConnector] = None,
+        proxy: Optional[str] = None,
+        proxy_auth: Optional[aiohttp.BasicAuth] = None,
+        assume_unsync_clock: bool = True,
+        max_messages: Optional[int] = 1000,
+        application_id: Optional[int] = None,
+        heartbeat_timeout: float = 60.0,
+        guild_ready_timeout: float = 2.0,
+        allowed_mentions: Optional[AllowedMentions] = None,
+        activity: Optional[BaseActivity] = None,
+        status: Optional[Union[Status, str]] = None,
+        intents: Optional[Intents] = None,
+        chunk_guilds_at_startup: Optional[bool] = None,
+        member_cache_flags: Optional[MemberCacheFlags] = None,
+        localization_provider: Optional[LocalizationProtocol] = None,
+        strict_localization: bool = False,
     ) -> None:
-        kwargs.pop("shard_id", None)
-        self.shard_ids: Optional[List[int]] = kwargs.pop("shard_ids", None)
-        super().__init__(*args, loop=loop, **kwargs)
+        ...
+
+    @overload
+    def __init__(self: NoReturn) -> None:
+        ...
+
+    def __init__(self, *args: Any, shard_ids: Optional[List[int]] = None, **kwargs: Any) -> None:
+        self.shard_ids = shard_ids
+        super().__init__(*args, **kwargs)
 
         if self.shard_ids is not None:
             if self.shard_count is None:
@@ -426,36 +450,47 @@ class AutoShardedClient(Client):
         self.__shards[shard_id] = ret = Shard(ws, self, self.__queue.put_nowait)
         ret.launch()
 
-    async def launch_shards(self) -> None:
+    async def launch_shards(self, *, ignore_session_start_limit: bool = False) -> None:
+        shard_count, gateway, session_start_limit = await self.http.get_bot_gateway(
+            encoding=self.gateway_params.encoding,
+            zlib=self.gateway_params.zlib,
+        )
+
+        self.session_start_limit = SessionStartLimit(session_start_limit)
+
         if self.shard_count is None:
-            self.shard_count, gateway = await self.http.get_bot_gateway()
-        else:
-            gateway = await self.http.get_gateway()
+            self.shard_count = shard_count
 
         self._connection.shard_count = self.shard_count
 
         shard_ids = self.shard_ids or range(self.shard_count)
         self._connection.shard_ids = shard_ids
 
+        if not ignore_session_start_limit and self.session_start_limit.remaining < self.shard_count:
+            raise SessionStartLimitReached(self.session_start_limit, requested=self.shard_count)
+
+        # TODO: maybe take max_concurrency from session start limit into account?
         for shard_id in shard_ids:
             initial = shard_id == shard_ids[0]
             await self.launch_shard(gateway, shard_id, initial=initial)
 
         self._connection.shards_launched.set()
 
-    async def connect(self, *, reconnect: bool = True) -> None:
+    async def connect(
+        self, *, reconnect: bool = True, ignore_session_start_limit: bool = False
+    ) -> None:
         self._reconnect = reconnect
-        await self.launch_shards()
+        await self.launch_shards(ignore_session_start_limit=ignore_session_start_limit)
 
         while not self.is_closed():
             item = await self.__queue.get()
             if item.type == EventType.close:
                 await self.close()
                 if isinstance(item.error, ConnectionClosed):
-                    if item.error.code != 1000:
-                        raise item.error
                     if item.error.code == 4014:
                         raise PrivilegedIntentsRequired(item.shard.id) from None
+                    if item.error.code != 1000:
+                        raise item.error
                 return
             elif item.type in (EventType.identify, EventType.resume):
                 await item.shard.reidentify(item.error)
@@ -497,7 +532,7 @@ class AutoShardedClient(Client):
         *,
         activity: Optional[BaseActivity] = None,
         status: Optional[Status] = None,
-        shard_id: int = None,
+        shard_id: Optional[int] = None,
     ) -> None:
         """|coro|
 
@@ -510,6 +545,9 @@ class AutoShardedClient(Client):
 
         .. versionchanged:: 2.0
             Removed the ``afk`` keyword-only parameter.
+
+        .. versionchanged:: 2.6
+            Raises :exc:`TypeError` instead of ``InvalidArgument``.
 
         Parameters
         ----------
@@ -525,7 +563,7 @@ class AutoShardedClient(Client):
 
         Raises
         ------
-        InvalidArgument
+        TypeError
             If the ``activity`` parameter is not of proper type.
         """
         if status is None:

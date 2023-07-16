@@ -1,5 +1,6 @@
-"""
-disnake.webhook
+# SPDX-License-Identifier: MIT
+
+"""disnake.webhook
 ~~~~~~~~~~~~~~
 
 Webhook support
@@ -8,6 +9,10 @@ Webhook support
 :license: MIT, see LICENSE for more details.
 
 """
-
+from . import async_, sync
 from .async_ import *
 from .sync import *
+
+__all__ = []
+__all__.extend(async_.__all__)
+__all__.extend(sync.__all__)

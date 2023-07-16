@@ -1,27 +1,5 @@
-"""
-The MIT License (MIT)
+# SPDX-License-Identifier: MIT
 
-Copyright (c) 2015-2021 Rapptz
-Copyright (c) 2021-present Disnake Development
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the "Software"),
-to deal in the Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the
-Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-"""
 from __future__ import annotations
 
 import inspect
@@ -30,13 +8,14 @@ from typing import TYPE_CHECKING, Any, Dict, Generic, List, Optional, TypeVar, U
 
 import disnake.abc
 import disnake.utils
+from disnake import ApplicationCommandInteraction
 from disnake.message import Message
 
 if TYPE_CHECKING:
     from typing_extensions import ParamSpec
 
-    from disnake.channel import DMChannel, TextChannel, Thread, VoiceChannel
-    from disnake.guild import Guild
+    from disnake.channel import DMChannel
+    from disnake.guild import Guild, GuildMessageable
     from disnake.member import Member
     from disnake.state import ConnectionState
     from disnake.user import ClientUser, User
@@ -63,8 +42,7 @@ else:
 
 
 class Context(disnake.abc.Messageable, Generic[BotT]):
-    """
-    Represents the context in which a command is being invoked under.
+    """Represents the context in which a command is being invoked under.
 
     This class contains a lot of meta data to help you understand more about
     the invocation context. This class is not created manually and is instead
@@ -84,7 +62,7 @@ class Context(disnake.abc.Messageable, Generic[BotT]):
         then this list could be incomplete.
     kwargs: :class:`dict`
         A dictionary of transformed arguments that were passed into the command.
-        Similar to :attr:`args`\, if this is accessed in the
+        Similar to :attr:`args`\\, if this is accessed in the
         :func:`.on_command_error` event then this dict could be incomplete.
     current_parameter: Optional[:class:`inspect.Parameter`]
         The parameter that is currently being inspected and converted.
@@ -135,7 +113,7 @@ class Context(disnake.abc.Messageable, Generic[BotT]):
         subcommand_passed: Optional[str] = None,
         command_failed: bool = False,
         current_parameter: Optional[inspect.Parameter] = None,
-    ):
+    ) -> None:
         self.message: Message = message
         self.bot: BotT = bot
         self.args: List[Any] = args or []
@@ -152,8 +130,7 @@ class Context(disnake.abc.Messageable, Generic[BotT]):
         self._state: ConnectionState = self.message._state
 
     async def invoke(self, command: Command[CogT, P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
-        """
-        |coro|
+        """|coro|
 
         Calls a command with the arguments given.
 
@@ -173,9 +150,9 @@ class Context(disnake.abc.Messageable, Generic[BotT]):
         ----------
         command: :class:`.Command`
             The command that is going to be called.
-        \*args
+        *args
             The arguments to use.
-        \*\*kwargs
+        **kwargs
             The keyword arguments to use.
 
         Raises
@@ -269,8 +246,8 @@ class Context(disnake.abc.Messageable, Generic[BotT]):
         # consider this to be an *incredibly* strange use case. I'd rather go
         # for this common use case rather than waste performance for the
         # odd one.
-        pattern = re.compile(r"<@!?%s>" % user.id)
-        return pattern.sub("@%s" % user.display_name.replace("\\", r"\\"), self.prefix)
+        pattern = re.compile(rf"<@!?{user.id}>")
+        return pattern.sub("@" + user.display_name.replace("\\", r"\\"), self.prefix)
 
     @property
     def cog(self) -> Optional[Cog]:
@@ -285,7 +262,7 @@ class Context(disnake.abc.Messageable, Generic[BotT]):
         return self.message.guild
 
     @disnake.utils.cached_property
-    def channel(self) -> Union[TextChannel, Thread, DMChannel, VoiceChannel]:
+    def channel(self) -> Union[GuildMessageable, DMChannel]:
         """Union[:class:`.abc.Messageable`]: Returns the channel associated with this context's command.
         Shorthand for :attr:`.Message.channel`.
         """
@@ -370,9 +347,7 @@ class Context(disnake.abc.Messageable, Generic[BotT]):
         if entity is None:
             return None
 
-        try:
-            entity.qualified_name
-        except AttributeError:
+        if not hasattr(entity, "qualified_name"):
             # if we're here then it's not a cog, group, or command.
             return None
 
@@ -406,6 +381,9 @@ class GuildContext(Context):
     """
 
     guild: Guild
-    channel: Union[TextChannel, Thread, VoiceChannel]
+    channel: GuildMessageable
     author: Member
     me: Member
+
+
+AnyContext = Union[Context, ApplicationCommandInteraction]

@@ -1,41 +1,20 @@
-"""
-The MIT License (MIT)
-
-Copyright (c) 2015-2021 Rapptz
-Copyright (c) 2021-present Disnake Development
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the "Software"),
-to deal in the Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the
-Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-"""
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
 import asyncio
 import time
 from collections import deque
-from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, Optional, Type, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, Optional
 
+from disnake.abc import PrivateChannel
 from disnake.enums import Enum
 
-from ...abc import PrivateChannel
 from .errors import MaxConcurrencyReached
 
 if TYPE_CHECKING:
+    from typing_extensions import Self
+
     from ...message import Message
 
 __all__ = (
@@ -45,9 +24,6 @@ __all__ = (
     "DynamicCooldownMapping",
     "MaxConcurrency",
 )
-
-C = TypeVar("C", bound="CooldownMapping")
-MC = TypeVar("MC", bound="MaxConcurrency")
 
 
 class BucketType(Enum):
@@ -222,7 +198,7 @@ class CooldownMapping:
         return self._type
 
     @classmethod
-    def from_cooldown(cls: Type[C], rate, per, type) -> C:
+    def from_cooldown(cls, rate: float, per: float, type) -> Self:
         return cls(Cooldown(rate, per), type)
 
     def _bucket_key(self, msg: Message) -> Any:
@@ -291,7 +267,7 @@ class DynamicCooldownMapping(CooldownMapping):
 
 
 class _Semaphore:
-    """This class is a version of a semaphore.
+    """A custom version of a semaphore.
 
     If you're wondering why asyncio.Semaphore isn't being used,
     it's because it doesn't expose the internal value. This internal
@@ -307,7 +283,7 @@ class _Semaphore:
 
     def __init__(self, number: int) -> None:
         self.value: int = number
-        self.loop: asyncio.AbstractEventLoop = asyncio.get_event_loop()
+        self.loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
         self._waiters: Deque[asyncio.Future] = deque()
 
     def __repr__(self) -> str:
@@ -336,7 +312,7 @@ class _Semaphore:
             self._waiters.append(future)
             try:
                 await future
-            except:
+            except Exception:
                 future.cancel()
                 if self.value > 0 and not future.cancelled():
                     self.wake_up()
@@ -365,7 +341,7 @@ class MaxConcurrency:
         if not isinstance(per, BucketType):
             raise TypeError(f"max_concurrency 'per' must be of type BucketType not {type(per)!r}")
 
-    def copy(self: MC) -> MC:
+    def copy(self) -> Self:
         return self.__class__(self.number, per=self.per, wait=self.wait)
 
     def __repr__(self) -> str:

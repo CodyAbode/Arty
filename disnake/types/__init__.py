@@ -1,5 +1,6 @@
-"""
-disnake.types
+# SPDX-License-Identifier: MIT
+
+"""disnake.types
 ~~~~~~~~~~~~~~
 
 Typings for the Discord API

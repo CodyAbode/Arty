@@ -1,27 +1,4 @@
-"""
-The MIT License (MIT)
-
-Copyright (c) 2015-2021 Rapptz
-Copyright (c) 2021-present Disnake Development
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the "Software"),
-to deal in the Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the
-Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-"""
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
@@ -32,13 +9,22 @@ from typing import TYPE_CHECKING, Any, Literal, Optional, Tuple, Union
 import yarl
 
 from . import utils
-from .errors import DiscordException, InvalidArgument
+from .errors import DiscordException
+from .file import File
 
 __all__ = ("Asset",)
 
 if TYPE_CHECKING:
+    from typing_extensions import Self
+
+    from .state import ConnectionState
+    from .webhook.async_ import BaseWebhook, _WebhookState
+
     ValidStaticFormatTypes = Literal["webp", "jpeg", "jpg", "png"]
     ValidAssetFormatTypes = Literal["webp", "jpeg", "jpg", "png", "gif"]
+    AnyState = Union[ConnectionState, _WebhookState[BaseWebhook]]
+
+AssetBytes = Union[bytes, "AssetMixin"]
 
 VALID_STATIC_FORMATS = frozenset({"jpeg", "jpg", "webp", "png"})
 VALID_ASSET_FORMATS = VALID_STATIC_FORMATS | {"gif"}
@@ -49,7 +35,9 @@ MISSING = utils.MISSING
 
 class AssetMixin:
     url: str
-    _state: Optional[Any]
+    _state: Optional[AnyState]
+
+    __slots__: Tuple[str, ...] = ("_state",)
 
     async def read(self) -> bytes:
         """|coro|
@@ -85,7 +73,7 @@ class AssetMixin:
         Parameters
         ----------
         fp: Union[:class:`io.BufferedIOBase`, :class:`os.PathLike`]
-            The file-like object to save this attachment to or the filename
+            The file-like object to save this asset to or the filename
             to use. If a filename is passed then a file is created with that
             filename and used instead.
         seek_begin: :class:`bool`
@@ -116,6 +104,62 @@ class AssetMixin:
             with open(fp, "wb") as f:
                 return f.write(data)
 
+    async def to_file(
+        self,
+        *,
+        spoiler: bool = False,
+        filename: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> File:
+        """|coro|
+
+        Converts the asset into a :class:`File` suitable for sending via
+        :meth:`abc.Messageable.send`.
+
+        .. versionadded:: 2.5
+
+        .. versionchanged:: 2.6
+            Raises :exc:`TypeError` instead of ``InvalidArgument``.
+
+        Parameters
+        ----------
+        spoiler: :class:`bool`
+            Whether the file is a spoiler.
+        filename: Optional[:class:`str`]
+            The filename to display when uploading to Discord. If this is not given, it defaults to
+            the name of the asset's URL.
+        description: Optional[:class:`str`]
+            The file's description.
+
+        Raises
+        ------
+        DiscordException
+            The asset does not have an associated state.
+        HTTPException
+            Downloading the asset failed.
+        NotFound
+            The asset was deleted.
+        TypeError
+            The asset is a unicode emoji or a sticker with lottie type.
+
+        Returns
+        -------
+        :class:`File`
+            The asset as a file suitable for sending.
+        """
+        data = await self.read()
+
+        if not filename:
+            filename = yarl.URL(self.url).name
+            # if the filename doesn't have an extension (e.g. widget member avatars),
+            # try to infer it from the data
+            if not os.path.splitext(filename)[1]:
+                ext = utils._get_extension_for_image(data)
+                if ext:
+                    filename += ext
+
+        return File(io.BytesIO(data), filename=filename, spoiler=spoiler, description=description)
+
 
 class Asset(AssetMixin):
     """Represents a CDN asset on Discord.
@@ -144,7 +188,6 @@ class Asset(AssetMixin):
     """
 
     __slots__: Tuple[str, ...] = (
-        "_state",
         "_url",
         "_animated",
         "_key",
@@ -152,14 +195,14 @@ class Asset(AssetMixin):
 
     BASE = "https://cdn.discordapp.com"
 
-    def __init__(self, state, *, url: str, key: str, animated: bool = False):
-        self._state = state
-        self._url = url
-        self._animated = animated
-        self._key = key
+    def __init__(self, state: AnyState, *, url: str, key: str, animated: bool = False) -> None:
+        self._state: AnyState = state
+        self._url: str = url
+        self._animated: bool = animated
+        self._key: str = key
 
     @classmethod
-    def _from_default_avatar(cls, state, index: int) -> Asset:
+    def _from_default_avatar(cls, state: AnyState, index: int) -> Self:
         return cls(
             state,
             url=f"{cls.BASE}/embed/avatars/{index}.png",
@@ -168,7 +211,7 @@ class Asset(AssetMixin):
         )
 
     @classmethod
-    def _from_avatar(cls, state, user_id: int, avatar: str) -> Asset:
+    def _from_avatar(cls, state: AnyState, user_id: int, avatar: str) -> Self:
         animated = avatar.startswith("a_")
         format = "gif" if animated else "png"
         return cls(
@@ -179,7 +222,9 @@ class Asset(AssetMixin):
         )
 
     @classmethod
-    def _from_guild_avatar(cls, state, guild_id: int, member_id: int, avatar: str) -> Asset:
+    def _from_guild_avatar(
+        cls, state: AnyState, guild_id: int, member_id: int, avatar: str
+    ) -> Self:
         animated = avatar.startswith("a_")
         format = "gif" if animated else "png"
         return cls(
@@ -190,7 +235,7 @@ class Asset(AssetMixin):
         )
 
     @classmethod
-    def _from_icon(cls, state, object_id: int, icon_hash: str, path: str) -> Asset:
+    def _from_icon(cls, state: AnyState, object_id: int, icon_hash: str, path: str) -> Self:
         return cls(
             state,
             url=f"{cls.BASE}/{path}-icons/{object_id}/{icon_hash}.png?size=1024",
@@ -199,7 +244,7 @@ class Asset(AssetMixin):
         )
 
     @classmethod
-    def _from_cover_image(cls, state, object_id: int, cover_image_hash: str) -> Asset:
+    def _from_cover_image(cls, state: AnyState, object_id: int, cover_image_hash: str) -> Self:
         return cls(
             state,
             url=f"{cls.BASE}/app-assets/{object_id}/store/{cover_image_hash}.png?size=1024",
@@ -208,7 +253,7 @@ class Asset(AssetMixin):
         )
 
     @classmethod
-    def _from_guild_image(cls, state, guild_id: int, image: str, path: str) -> Asset:
+    def _from_guild_image(cls, state: AnyState, guild_id: int, image: str, path: str) -> Self:
         return cls(
             state,
             url=f"{cls.BASE}/{path}/{guild_id}/{image}.png?size=1024",
@@ -217,7 +262,7 @@ class Asset(AssetMixin):
         )
 
     @classmethod
-    def _from_guild_icon(cls, state, guild_id: int, icon_hash: str) -> Asset:
+    def _from_guild_icon(cls, state: AnyState, guild_id: int, icon_hash: str) -> Self:
         animated = icon_hash.startswith("a_")
         format = "gif" if animated else "png"
         return cls(
@@ -228,7 +273,7 @@ class Asset(AssetMixin):
         )
 
     @classmethod
-    def _from_sticker_banner(cls, state, banner: int) -> Asset:
+    def _from_sticker_banner(cls, state: AnyState, banner: int) -> Self:
         return cls(
             state,
             url=f"{cls.BASE}/app-assets/710982414301790216/store/{banner}.png",
@@ -237,7 +282,7 @@ class Asset(AssetMixin):
         )
 
     @classmethod
-    def _from_banner(cls, state, id: int, banner_hash: str) -> Asset:
+    def _from_banner(cls, state: AnyState, id: int, banner_hash: str) -> Self:
         animated = banner_hash.startswith("a_")
         format = "gif" if animated else "png"
         return cls(
@@ -248,7 +293,7 @@ class Asset(AssetMixin):
         )
 
     @classmethod
-    def _from_role_icon(cls, state, role_id: int, icon_hash: str) -> Asset:
+    def _from_role_icon(cls, state: AnyState, role_id: int, icon_hash: str) -> Self:
         animated = icon_hash.startswith("a_")
         format = "gif" if animated else "png"
         return cls(
@@ -259,7 +304,9 @@ class Asset(AssetMixin):
         )
 
     @classmethod
-    def _from_guild_scheduled_event_image(cls, state, event_id: int, image_hash: str) -> Asset:
+    def _from_guild_scheduled_event_image(
+        cls, state: AnyState, event_id: int, image_hash: str
+    ) -> Self:
         return cls(
             state,
             url=f"{cls.BASE}/guild-events/{event_id}/{image_hash}.png?size=2048",
@@ -273,14 +320,14 @@ class Asset(AssetMixin):
     def __len__(self) -> int:
         return len(self._url)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         shorten = self._url.replace(self.BASE, "")
         return f"<Asset url={shorten!r}>"
 
-    def __eq__(self, other):
+    def __eq__(self, other: Any) -> bool:
         return isinstance(other, Asset) and self._url == other._url
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return hash(self._url)
 
     @property
@@ -309,6 +356,9 @@ class Asset(AssetMixin):
     ) -> Asset:
         """Returns a new asset with the passed components replaced.
 
+        .. versionchanged:: 2.6
+            Raises :exc:`ValueError` instead of ``InvalidArgument``.
+
         Parameters
         ----------
         size: :class:`int`
@@ -322,7 +372,7 @@ class Asset(AssetMixin):
 
         Raises
         ------
-        InvalidArgument
+        ValueError
             An invalid size or format was passed.
 
         Returns
@@ -336,29 +386,32 @@ class Asset(AssetMixin):
         if format is not MISSING:
             if self._animated:
                 if format not in VALID_ASSET_FORMATS:
-                    raise InvalidArgument(f"format must be one of {VALID_ASSET_FORMATS}")
+                    raise ValueError(f"format must be one of {VALID_ASSET_FORMATS}")
             else:
                 if format not in VALID_STATIC_FORMATS:
-                    raise InvalidArgument(f"format must be one of {VALID_STATIC_FORMATS}")
+                    raise ValueError(f"format must be one of {VALID_STATIC_FORMATS}")
             url = url.with_path(f"{path}.{format}")
 
         if static_format is not MISSING and not self._animated:
             if static_format not in VALID_STATIC_FORMATS:
-                raise InvalidArgument(f"static_format must be one of {VALID_STATIC_FORMATS}")
+                raise ValueError(f"static_format must be one of {VALID_STATIC_FORMATS}")
             url = url.with_path(f"{path}.{static_format}")
 
         if size is not MISSING:
             if not utils.valid_icon_size(size):
-                raise InvalidArgument("size must be a power of 2 between 16 and 4096")
+                raise ValueError("size must be a power of 2 between 16 and 4096")
             url = url.with_query(size=size)
         else:
             url = url.with_query(url.raw_query_string)
 
-        url = str(url)
-        return Asset(state=self._state, url=url, key=self._key, animated=self._animated)
+        url_str = str(url)
+        return Asset(state=self._state, url=url_str, key=self._key, animated=self._animated)
 
     def with_size(self, size: int, /) -> Asset:
         """Returns a new asset with the specified size.
+
+        .. versionchanged:: 2.6
+            Raises :exc:`ValueError` instead of ``InvalidArgument``.
 
         Parameters
         ----------
@@ -367,7 +420,7 @@ class Asset(AssetMixin):
 
         Raises
         ------
-        InvalidArgument
+        ValueError
             The asset had an invalid size.
 
         Returns
@@ -376,13 +429,16 @@ class Asset(AssetMixin):
             The newly updated asset.
         """
         if not utils.valid_icon_size(size):
-            raise InvalidArgument("size must be a power of 2 between 16 and 4096")
+            raise ValueError("size must be a power of 2 between 16 and 4096")
 
         url = str(yarl.URL(self._url).with_query(size=size))
         return Asset(state=self._state, url=url, key=self._key, animated=self._animated)
 
     def with_format(self, format: ValidAssetFormatTypes, /) -> Asset:
         """Returns a new asset with the specified format.
+
+        .. versionchanged:: 2.6
+            Raises :exc:`ValueError` instead of ``InvalidArgument``.
 
         Parameters
         ----------
@@ -391,7 +447,7 @@ class Asset(AssetMixin):
 
         Raises
         ------
-        InvalidArgument
+        ValueError
             The asset had an invalid format.
 
         Returns
@@ -401,21 +457,24 @@ class Asset(AssetMixin):
         """
         if self._animated:
             if format not in VALID_ASSET_FORMATS:
-                raise InvalidArgument(f"format must be one of {VALID_ASSET_FORMATS}")
+                raise ValueError(f"format must be one of {VALID_ASSET_FORMATS}")
         else:
             if format not in VALID_STATIC_FORMATS:
-                raise InvalidArgument(f"format must be one of {VALID_STATIC_FORMATS}")
+                raise ValueError(f"format must be one of {VALID_STATIC_FORMATS}")
 
         url = yarl.URL(self._url)
         path, _ = os.path.splitext(url.path)
-        url = str(url.with_path(f"{path}.{format}").with_query(url.raw_query_string))
-        return Asset(state=self._state, url=url, key=self._key, animated=self._animated)
+        url_str = str(url.with_path(f"{path}.{format}").with_query(url.raw_query_string))
+        return Asset(state=self._state, url=url_str, key=self._key, animated=self._animated)
 
     def with_static_format(self, format: ValidStaticFormatTypes, /) -> Asset:
         """Returns a new asset with the specified static format.
 
         This only changes the format if the underlying asset is
         not animated. Otherwise, the asset is not changed.
+
+        .. versionchanged:: 2.6
+            Raises :exc:`ValueError` instead of ``InvalidArgument``.
 
         Parameters
         ----------
@@ -424,7 +483,7 @@ class Asset(AssetMixin):
 
         Raises
         ------
-        InvalidArgument
+        ValueError
             The asset had an invalid format.
 
         Returns

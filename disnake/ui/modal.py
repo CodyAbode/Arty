@@ -1,26 +1,5 @@
-"""
-The MIT License (MIT)
+# SPDX-License-Identifier: MIT
 
-Copyright (c) 2021-present Disnake Development
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the "Software"),
-to deal in the Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the
-Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-"""
 from __future__ import annotations
 
 import asyncio
@@ -38,7 +17,7 @@ if TYPE_CHECKING:
     from ..interactions.modal import ModalInteraction
     from ..state import ConnectionState
     from ..types.components import Modal as ModalPayload
-    from .action_row import Components
+    from .action_row import Components, ModalUIComponent
 
 
 __all__ = ("Modal",)
@@ -69,7 +48,7 @@ class Modal:
         self,
         *,
         title: str,
-        components: Components,
+        components: Components[ModalUIComponent],
         custom_id: str = MISSING,
         timeout: float = 600,
     ) -> None:
@@ -232,7 +211,7 @@ class Modal:
         finally:
             # if the interaction was responded to (no matter if in the callback or error handler),
             # the modal closed for the user and therefore can be removed from the store
-            if interaction.response._responded:
+            if interaction.response._response_type is not None:
                 interaction._state._modal_store.remove_modal(
                     interaction.author.id, interaction.custom_id
                 )
@@ -250,7 +229,7 @@ class ModalStore:
         self._modals: Dict[Tuple[int, str], Modal] = {}
 
     def add_modal(self, user_id: int, modal: Modal) -> None:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         self._modals[(user_id, modal.custom_id)] = modal
         loop.create_task(self.handle_timeout(user_id, modal.custom_id, modal.timeout))
 

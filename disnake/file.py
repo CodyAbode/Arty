@@ -1,27 +1,4 @@
-"""
-The MIT License (MIT)
-
-Copyright (c) 2015-2021 Rapptz
-Copyright (c) 2021-present Disnake Development
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the "Software"),
-to deal in the Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the
-Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-"""
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
@@ -33,13 +10,13 @@ __all__ = ("File",)
 
 
 class File:
-    """
-    A parameter object used for sending file objects.
+    """A parameter object used for sending file objects.
 
     .. note::
 
         File objects are single use and are not meant to be reused in
-        multiple :meth:`abc.Messageable.send`\s.
+        multiple :meth:`abc.Messageable.send`, :meth:`Message.edit`, :meth:`Interaction.send`,
+        or :meth:`Interaction.edit_original_response` calls or similar methods.
 
     Attributes
     ----------
@@ -82,7 +59,7 @@ class File:
         *,
         spoiler: bool = False,
         description: Optional[str] = None,
-    ):
+    ) -> None:
         if isinstance(fp, io.IOBase):
             if not (fp.seekable() and fp.readable()):
                 raise ValueError(f"File buffer {fp!r} must be seekable and readable")
@@ -133,3 +110,24 @@ class File:
         self.fp.close = self._closer
         if self._owner:
             self._closer()
+
+    @property
+    def closed(self) -> bool:
+        """:class:`bool`: Whether the file is closed.
+
+        This is a shorthand for ``File.fp.closed``.
+
+        .. versionadded:: 2.8
+        """
+        return self.fp.closed
+
+    @property
+    def bytes_length(self) -> int:
+        """:class:`int`: The bytes length of the :attr:`~File.fp` object.
+
+        .. versionadded:: 2.8
+        """
+        current_position = self.fp.tell()
+        bytes_length = self.fp.seek(0, io.SEEK_END)
+        self.fp.seek(current_position)
+        return bytes_length - current_position

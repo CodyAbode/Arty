@@ -1,27 +1,4 @@
-"""
-The MIT License (MIT)
-
-Copyright (c) 2015-2021 Rapptz
-Copyright (c) 2021-present Disnake Development
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the "Software"),
-to deal in the Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the
-Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-"""
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
@@ -41,12 +18,14 @@ from typing import (
     Literal,
     Optional,
     Tuple,
+    Type,
     TypedDict,
     TypeVar,
     overload,
 )
 
-from .errors import DiscordException, InvalidArgument
+from .errors import DiscordException
+from .utils import MISSING
 
 if TYPE_CHECKING:
     T = TypeVar("T")
@@ -80,7 +59,7 @@ c_int_ptr = ctypes.POINTER(ctypes.c_int)
 c_int16_ptr = ctypes.POINTER(ctypes.c_int16)
 c_float_ptr = ctypes.POINTER(ctypes.c_float)
 
-_lib = None
+_lib: Any = MISSING
 
 
 class EncoderStruct(ctypes.Structure):
@@ -149,9 +128,11 @@ def _err_ne(result: T, func: Callable, args: List) -> T:
 # The second one are the types of arguments it takes.
 # The third is the result type.
 # The fourth is the error handler.
-exported_functions: List[Tuple[Any, ...]] = [
+exported_functions: List[
+    Tuple[str, Optional[List[Type[ctypes._CData]]], Optional[Type[ctypes._CData]], Any]
+] = [
     # Generic
-    ("opus_get_version_string", None, ctypes.c_char_p, None),
+    ("opus_get_version_string", [], ctypes.c_char_p, None),
     ("opus_strerror", [ctypes.c_int], ctypes.c_char_p, None),
     # Encoder functions
     ("opus_encoder_get_size", [ctypes.c_int], ctypes.c_int, None),
@@ -173,7 +154,7 @@ exported_functions: List[Tuple[Any, ...]] = [
         ctypes.c_int32,
         _err_lt,
     ),
-    ("opus_encoder_ctl", None, ctypes.c_int32, _err_lt),
+    ("opus_encoder_ctl", [EncoderStructPtr, ctypes.c_int], ctypes.c_int32, _err_lt),
     ("opus_encoder_destroy", [EncoderStructPtr], None, None),
     # Decoder functions
     ("opus_decoder_get_size", [ctypes.c_int], ctypes.c_int, None),
@@ -204,7 +185,7 @@ exported_functions: List[Tuple[Any, ...]] = [
         ctypes.c_int,
         _err_lt,
     ),
-    ("opus_decoder_ctl", None, ctypes.c_int32, _err_lt),
+    ("opus_decoder_ctl", [DecoderStructPtr, ctypes.c_int], ctypes.c_int32, _err_lt),
     ("opus_decoder_destroy", [DecoderStructPtr], None, None),
     (
         "opus_decoder_get_nb_samples",
@@ -226,7 +207,7 @@ def libopus_loader(name: str) -> Any:
 
     # register the functions...
     for item in exported_functions:
-        func = getattr(lib, item[0])
+        func: ctypes._NamedFuncPointer = getattr(lib, item[0])
 
         try:
             if item[1]:
@@ -246,20 +227,23 @@ def libopus_loader(name: str) -> Any:
 
 
 def _load_default() -> bool:
-    global _lib
+    global _lib  # noqa: PLW0603
     try:
         if sys.platform == "win32":
             _basedir = os.path.dirname(os.path.abspath(__file__))
             _bitness = struct.calcsize("P") * 8
             _target = "x64" if _bitness > 32 else "x86"
             _filename = os.path.join(_basedir, "bin", f"libopus-0.{_target}.dll")
-            _lib = libopus_loader(_filename)
+            _lib = libopus_loader(_filename)  # noqa: PLW0603
         else:
-            _lib = libopus_loader(ctypes.util.find_library("opus"))
+            path = ctypes.util.find_library("opus")
+            if not path:
+                raise AssertionError("could not find the opus library")
+            _lib = libopus_loader(path)  # noqa: PLW0603
     except Exception:
-        _lib = None
+        _lib = MISSING
 
-    return _lib is not None
+    return _lib is not MISSING
 
 
 def load_opus(name: str) -> None:
@@ -297,7 +281,7 @@ def load_opus(name: str) -> None:
     name: :class:`str`
         The filename of the shared library.
     """
-    global _lib
+    global _lib  # noqa: PLW0603
     _lib = libopus_loader(name)
 
 
@@ -312,8 +296,7 @@ def is_loaded() -> bool:
     :class:`bool`
         Indicates if the opus library has been loaded.
     """
-    global _lib
-    return _lib is not None
+    return _lib is not MISSING
 
 
 class OpusError(DiscordException):
@@ -325,7 +308,7 @@ class OpusError(DiscordException):
         The error code returned.
     """
 
-    def __init__(self, code: int):
+    def __init__(self, code: int) -> None:
         self.code: int = code
         msg = _lib.opus_strerror(self.code).decode("utf-8")
         _log.info('"%s" has happened', msg)
@@ -350,13 +333,13 @@ class _OpusStruct:
     @staticmethod
     def get_opus_version() -> str:
         if not is_loaded() and not _load_default():
-            raise OpusNotLoaded()
+            raise OpusNotLoaded
 
         return _lib.opus_get_version_string().decode("utf-8")
 
 
 class Encoder(_OpusStruct):
-    def __init__(self, application: int = APPLICATION_AUDIO):
+    def __init__(self, application: int = APPLICATION_AUDIO) -> None:
         _OpusStruct.get_opus_version()
 
         self.application: int = application
@@ -407,7 +390,7 @@ class Encoder(_OpusStruct):
         _lib.opus_encoder_ctl(self._state, CTL_SET_FEC, 1 if enabled else 0)
 
     def set_expected_packet_loss_percent(self, percentage: float) -> None:
-        _lib.opus_encoder_ctl(self._state, CTL_SET_PLP, min(100, max(0, int(percentage * 100))))  # type: ignore
+        _lib.opus_encoder_ctl(self._state, CTL_SET_PLP, min(100, max(0, int(percentage * 100))))
 
     def encode(self, pcm: bytes, frame_size: int) -> bytes:
         max_data_bytes = len(pcm)
@@ -417,12 +400,11 @@ class Encoder(_OpusStruct):
 
         ret = _lib.opus_encode(self._state, pcm_ptr, frame_size, data, max_data_bytes)
 
-        # array can be initialized with bytes but mypy doesn't know
-        return array.array("b", data[:ret]).tobytes()  # type: ignore
+        return array.array("b", data[:ret]).tobytes()
 
 
 class Decoder(_OpusStruct):
-    def __init__(self):
+    def __init__(self) -> None:
         _OpusStruct.get_opus_version()
 
         self._state: DecoderStruct = self._create_state()
@@ -466,7 +448,6 @@ class Decoder(_OpusStruct):
 
     def set_gain(self, dB: float) -> int:
         """Sets the decoder gain in dB, from -128 to 128."""
-
         dB_Q8 = max(-32768, min(32767, round(dB * 256)))  # dB * 2^n where n is 8 (Q8)
         return self._set_gain(dB_Q8)
 
@@ -476,7 +457,6 @@ class Decoder(_OpusStruct):
 
     def _get_last_packet_duration(self) -> int:
         """Gets the duration (in samples) of the last packet successfully decoded or concealed."""
-
         ret = ctypes.c_int32()
         _lib.opus_decoder_ctl(self._state, CTL_LAST_PACKET_DURATION, ctypes.byref(ret))
         return ret.value
@@ -491,7 +471,7 @@ class Decoder(_OpusStruct):
 
     def decode(self, data: Optional[bytes], *, fec: bool = False) -> bytes:
         if data is None and fec:
-            raise InvalidArgument("Invalid arguments: FEC cannot be used with null data")
+            raise TypeError("Invalid arguments: FEC cannot be used with null data")
 
         if data is None:
             frame_size = self._get_last_packet_duration() or self.SAMPLES_PER_FRAME

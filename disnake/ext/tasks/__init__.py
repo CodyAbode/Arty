@@ -1,27 +1,4 @@
-"""
-The MIT License (MIT)
-
-Copyright (c) 2015-2021 Rapptz
-Copyright (c) 2021-present Disnake Development
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the "Software"),
-to deal in the Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the
-Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-"""
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
@@ -30,8 +7,24 @@ import datetime
 import inspect
 import sys
 import traceback
+import warnings
 from collections.abc import Sequence
-from typing import Any, Awaitable, Callable, Generic, List, Optional, Type, TypeVar, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Coroutine,
+    Generic,
+    List,
+    Optional,
+    Protocol,
+    Type,
+    TypeVar,
+    Union,
+    cast,
+    get_origin,
+    overload,
+)
 
 import aiohttp
 
@@ -39,13 +32,21 @@ import disnake
 from disnake.backoff import ExponentialBackoff
 from disnake.utils import MISSING, utcnow
 
+if TYPE_CHECKING:
+    from typing_extensions import Concatenate, ParamSpec, Self
+
+    P = ParamSpec("P")
+
+else:
+    P = TypeVar("P")
+
 __all__ = ("loop",)
 
 T = TypeVar("T")
-_func = Callable[..., Awaitable[Any]]
+_func = Callable[..., Coroutine[Any, Any, Any]]
 LF = TypeVar("LF", bound=_func)
 FT = TypeVar("FT", bound=_func)
-ET = TypeVar("ET", bound=Callable[[Any, BaseException], Awaitable[Any]])
+ET = TypeVar("ET", bound=Callable[[Any, BaseException], Coroutine[Any, Any, Any]])
 
 
 class SleepHandle:
@@ -53,16 +54,16 @@ class SleepHandle:
 
     def __init__(self, dt: datetime.datetime, *, loop: asyncio.AbstractEventLoop) -> None:
         self.loop = loop
-        self.future = future = loop.create_future()
+        self.future: asyncio.Future[bool] = loop.create_future()
         relative_delta = disnake.utils.compute_timedelta(dt)
-        self.handle = loop.call_later(relative_delta, future.set_result, True)
+        self.handle = loop.call_later(relative_delta, self.future.set_result, True)
 
     def recalculate(self, dt: datetime.datetime) -> None:
         self.handle.cancel()
         relative_delta = disnake.utils.compute_timedelta(dt)
         self.handle = self.loop.call_later(relative_delta, self.future.set_result, True)
 
-    def wait(self) -> asyncio.Future[Any]:
+    def wait(self) -> asyncio.Future[bool]:
         return self.future
 
     def done(self) -> bool:
@@ -82,14 +83,18 @@ class Loop(Generic[LF]):
     def __init__(
         self,
         coro: LF,
-        seconds: float,
-        hours: float,
-        minutes: float,
-        time: Union[datetime.time, Sequence[datetime.time]],
-        count: Optional[int],
-        reconnect: bool,
-        loop: asyncio.AbstractEventLoop,
+        *,
+        seconds: float = 0,
+        minutes: float = 0,
+        hours: float = 0,
+        time: Union[datetime.time, Sequence[datetime.time]] = MISSING,
+        count: Optional[int] = None,
+        reconnect: bool = True,
+        loop: asyncio.AbstractEventLoop = MISSING,
     ) -> None:
+        """.. note:
+        If you overwrite ``__init__`` arguments, make sure to redefine .clone too.
+        """
         self.coro: LF = coro
         self.reconnect: bool = reconnect
         self.loop: asyncio.AbstractEventLoop = loop
@@ -97,7 +102,7 @@ class Loop(Generic[LF]):
         self._current_loop = 0
         self._handle: SleepHandle = MISSING
         self._task: asyncio.Task[None] = MISSING
-        self._injected = None
+        self._injected: Any = None
         self._valid_exception = (
             OSError,
             disnake.GatewayNotFound,
@@ -120,7 +125,7 @@ class Loop(Generic[LF]):
         self._last_iteration: datetime.datetime = MISSING
         self._next_iteration = None
 
-        if not inspect.iscoroutinefunction(self.coro):
+        if not asyncio.iscoroutinefunction(self.coro):
             raise TypeError(f"Expected coroutine function, not {type(self.coro).__name__!r}.")
 
     async def _call_loop_function(self, name: str, *args: Any, **kwargs: Any) -> None:
@@ -183,7 +188,7 @@ class Loop(Generic[LF]):
         except Exception as exc:
             self._has_failed = True
             await self._call_loop_function("error", exc)
-            raise exc
+            raise
         finally:
             await self._call_loop_function("after_loop")
             self._handle.cancel()
@@ -192,11 +197,16 @@ class Loop(Generic[LF]):
             self._stop_next_iteration = False
             self._has_failed = False
 
-    def __get__(self, obj: T, objtype: Type[T]) -> Loop[LF]:
+    def __get__(self, obj: T, objtype: Type[T]) -> Self:
         if obj is None:
             return self
+        clone = self.clone()
+        clone._injected = obj
+        setattr(obj, self.coro.__name__, clone)
+        return clone
 
-        copy: Loop[LF] = Loop(
+    def clone(self) -> Self:
+        instance = type(self)(
             self.coro,
             seconds=self._seconds,
             hours=self._hours,
@@ -206,12 +216,11 @@ class Loop(Generic[LF]):
             reconnect=self.reconnect,
             loop=self.loop,
         )
-        copy._injected = obj
-        copy._before_loop = self._before_loop
-        copy._after_loop = self._after_loop
-        copy._error = self._error
-        setattr(obj, self.coro.__name__, copy)
-        return copy
+        instance._before_loop = self._before_loop
+        instance._after_loop = self._after_loop
+        instance._error = self._error
+        instance._injected = self._injected
+        return instance
 
     @property
     def seconds(self) -> Optional[float]:
@@ -271,8 +280,7 @@ class Loop(Generic[LF]):
         return self._next_iteration
 
     async def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        """
-        |coro|
+        """|coro|
 
         Calls the internal callback that the task holds.
 
@@ -280,9 +288,9 @@ class Loop(Generic[LF]):
 
         Parameters
         ----------
-        \*args
+        *args
             The arguments to use.
-        \*\*kwargs
+        **kwargs
             The keyword arguments to use.
         """
         if self._injected is not None:
@@ -291,14 +299,13 @@ class Loop(Generic[LF]):
         return await self.coro(*args, **kwargs)
 
     def start(self, *args: Any, **kwargs: Any) -> asyncio.Task[None]:
-        """
-        Starts the internal task in the event loop.
+        """Starts the internal task in the event loop.
 
         Parameters
         ----------
-        \*args
+        *args
             The arguments to use.
-        \*\*kwargs
+        **kwargs
             The keyword arguments to use.
 
         Raises
@@ -318,16 +325,17 @@ class Loop(Generic[LF]):
             args = (self._injected, *args)
 
         if self.loop is MISSING:
-            self.loop = asyncio.get_event_loop()
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                self.loop = asyncio.get_event_loop()
 
         self._task = self.loop.create_task(self._loop(*args, **kwargs))
         return self._task
 
     def stop(self) -> None:
-        """
-        Gracefully stops the task from running.
+        """Gracefully stops the task from running.
 
-        Unlike :meth:`cancel`\, this allows the task to finish its
+        Unlike :meth:`cancel`\\, this allows the task to finish its
         current iteration before gracefully exiting.
 
         .. note::
@@ -354,8 +362,7 @@ class Loop(Generic[LF]):
             self._task.cancel()
 
     def restart(self, *args: Any, **kwargs: Any) -> None:
-        """
-        A convenience method to restart the internal task.
+        """A convenience method to restart the internal task.
 
         .. note::
 
@@ -364,9 +371,9 @@ class Loop(Generic[LF]):
 
         Parameters
         ----------
-        \*args
+        *args
             The arguments to use.
-        \*\*kwargs
+        **kwargs
             The keyword arguments to use.
         """
 
@@ -379,11 +386,10 @@ class Loop(Generic[LF]):
             self._task.cancel()
 
     def add_exception_type(self, *exceptions: Type[BaseException]) -> None:
-        """
-        Adds exception types to be handled during the reconnect logic.
+        """Adds exception types to be handled during the reconnect logic.
 
         By default the exception types handled are those handled by
-        :meth:`disnake.Client.connect`\, which includes a lot of internet disconnection
+        :meth:`disnake.Client.connect`\\, which includes a lot of internet disconnection
         errors.
 
         This function is useful if you're interacting with a 3rd party library that
@@ -391,7 +397,7 @@ class Loop(Generic[LF]):
 
         Parameters
         ----------
-        \*exceptions: Type[:class:`BaseException`]
+        *exceptions: Type[:class:`BaseException`]
             An argument list of exception classes to handle.
 
         Raises
@@ -414,15 +420,14 @@ class Loop(Generic[LF]):
 
             This operation obviously cannot be undone!
         """
-        self._valid_exception = tuple()
+        self._valid_exception = ()
 
     def remove_exception_type(self, *exceptions: Type[BaseException]) -> bool:
-        """
-        Removes exception types from being handled during the reconnect logic.
+        """Removes exception types from being handled during the reconnect logic.
 
         Parameters
         ----------
-        \*exceptions: Type[:class:`BaseException`]
+        *exceptions: Type[:class:`BaseException`]
             An argument list of exception classes to handle.
 
         Returns
@@ -494,7 +499,7 @@ class Loop(Generic[LF]):
         TypeError
             The function was not a coroutine.
         """
-        if not inspect.iscoroutinefunction(coro):
+        if not asyncio.iscoroutinefunction(coro):
             raise TypeError(f"Expected coroutine function, received {coro.__class__.__name__!r}.")
 
         self._before_loop = coro
@@ -521,7 +526,7 @@ class Loop(Generic[LF]):
         TypeError
             The function was not a coroutine.
         """
-        if not inspect.iscoroutinefunction(coro):
+        if not asyncio.iscoroutinefunction(coro):
             raise TypeError(f"Expected coroutine function, received {coro.__class__.__name__!r}.")
 
         self._after_loop = coro
@@ -547,7 +552,7 @@ class Loop(Generic[LF]):
         TypeError
             The function was not a coroutine.
         """
-        if not inspect.iscoroutinefunction(coro):
+        if not asyncio.iscoroutinefunction(coro):
             raise TypeError(f"Expected coroutine function, received {coro.__class__.__name__!r}.")
 
         self._error = coro  # type: ignore
@@ -695,21 +700,55 @@ class Loop(Generic[LF]):
                 self._handle.recalculate(self._next_iteration)
 
 
+T_co = TypeVar("T_co", covariant=True)
+L_co = TypeVar("L_co", bound=Loop, covariant=True)
+
+
+class Object(Protocol[T_co, P]):
+    def __new__(cls) -> T_co:
+        ...
+
+    def __init__(*args: P.args, **kwargs: P.kwargs) -> None:
+        ...
+
+
+@overload
 def loop(
     *,
-    seconds: float = MISSING,
-    minutes: float = MISSING,
-    hours: float = MISSING,
-    time: Union[datetime.time, Sequence[datetime.time]] = MISSING,
+    seconds: float = ...,
+    minutes: float = ...,
+    hours: float = ...,
+    time: Union[datetime.time, Sequence[datetime.time]] = ...,
     count: Optional[int] = None,
     reconnect: bool = True,
-    loop: asyncio.AbstractEventLoop = MISSING,
+    loop: asyncio.AbstractEventLoop = ...,
 ) -> Callable[[LF], Loop[LF]]:
+    ...
+
+
+@overload
+def loop(
+    cls: Type[Object[L_co, Concatenate[LF, P]]], *_: P.args, **kwargs: P.kwargs
+) -> Callable[[LF], L_co]:
+    ...
+
+
+def loop(
+    cls: Type[Object[L_co, Concatenate[LF, P]]] = Loop[LF],
+    **kwargs: Any,
+) -> Callable[[LF], L_co]:
     """A decorator that schedules a task in the background for you with
     optional reconnect logic. The decorator returns a :class:`Loop`.
 
     Parameters
     ----------
+    cls: Type[:class:`Loop`]
+        The loop subclass to create an instance of. If provided, the following parameters
+        described below do not apply. Instead, this decorator will accept the same keywords
+        as the passed cls does.
+
+        .. versionadded:: 2.6
+
     seconds: :class:`float`
         The number of seconds between every iteration.
     minutes: :class:`float`
@@ -745,20 +784,20 @@ def loop(
     ValueError
         An invalid value was given.
     TypeError
-        The function was not a coroutine, an invalid value for the ``time`` parameter was passed,
+        The function was not a coroutine, the ``cls`` parameter was not a subclass of ``Loop``,
+        an invalid value for the ``time`` parameter was passed,
         or ``time`` parameter was passed in conjunction with relative time parameters.
     """
+    if (origin := get_origin(cls)) is not None:
+        cls = origin
 
-    def decorator(func: LF) -> Loop[LF]:
-        return Loop[LF](
-            func,
-            seconds=seconds,
-            minutes=minutes,
-            hours=hours,
-            count=count,
-            time=time,
-            reconnect=reconnect,
-            loop=loop,
-        )
+    if not isinstance(cls, type) or not issubclass(cls, Loop):
+        raise TypeError(f"cls argument must be a subclass of Loop, got {cls!r}")
+
+    def decorator(func: LF) -> L_co:
+        if not asyncio.iscoroutinefunction(func):
+            raise TypeError("decorated function must be a coroutine")
+
+        return cast("Type[L_co]", cls)(func, **kwargs)
 
     return decorator

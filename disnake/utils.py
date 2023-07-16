@@ -1,32 +1,9 @@
-"""
-The MIT License (MIT)
+# SPDX-License-Identifier: MIT
 
-Copyright (c) 2015-2021 Rapptz
-Copyright (c) 2021-present Disnake Development
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the "Software"),
-to deal in the Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the
-Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-"""
 from __future__ import annotations
 
 import array
 import asyncio
-import collections.abc
 import datetime
 import functools
 import json
@@ -34,10 +11,9 @@ import os
 import pkgutil
 import re
 import sys
-import types
 import unicodedata
 import warnings
-from base64 import b64encode, urlsafe_b64decode as b64decode
+from base64 import b64encode
 from bisect import bisect_left
 from inspect import getdoc as _getdoc, isawaitable as _isawaitable, signature as _signature
 from operator import attrgetter
@@ -45,6 +21,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     AsyncIterator,
+    Awaitable,
     Callable,
     Dict,
     ForwardRef,
@@ -54,22 +31,25 @@ from typing import (
     List,
     Literal,
     Mapping,
+    NoReturn,
     Optional,
     Protocol,
     Sequence,
+    Set,
     Tuple,
     Type,
     TypedDict,
     TypeVar,
     Union,
+    get_origin,
     overload,
 )
 from urllib.parse import parse_qs, urlencode
 
-from .errors import InvalidArgument
+from .enums import Locale
 
 try:
-    import orjson  # type: ignore
+    import orjson
 except ModuleNotFoundError:
     HAS_ORJSON = False
 else:
@@ -78,7 +58,6 @@ else:
 
 __all__ = (
     "oauth_url",
-    "parse_token",
     "snowflake_time",
     "time_snowflake",
     "find",
@@ -91,19 +70,23 @@ __all__ = (
     "as_chunks",
     "format_dt",
     "search_directory",
+    "as_valid_locale",
 )
 
 DISCORD_EPOCH = 1420070400000
 
 
 class _MissingSentinel:
-    def __eq__(self, other):
+    def __eq__(self, other: Any) -> bool:
         return False
 
-    def __bool__(self):
+    def __hash__(self) -> int:
+        return 0
+
+    def __bool__(self) -> bool:
         return False
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return "..."
 
 
@@ -111,9 +94,9 @@ MISSING: Any = _MissingSentinel()
 
 
 class _cached_property:
-    def __init__(self, function):
+    def __init__(self, function) -> None:
         self.function = function
-        self.__doc__ = getattr(function, "__doc__")
+        self.__doc__: Optional[str] = function.__doc__
 
     def __get__(self, instance, owner):
         if instance is None:
@@ -128,9 +111,10 @@ class _cached_property:
 if TYPE_CHECKING:
     from functools import cached_property as cached_property
 
-    from typing_extensions import ParamSpec
+    from typing_extensions import Never, ParamSpec, Self
 
     from .abc import Snowflake
+    from .asset import AssetBytes
     from .invite import Invite
     from .permissions import Permissions
     from .template import Template
@@ -154,10 +138,10 @@ class CachedSlotProperty(Generic[T, T_co]):
     def __init__(self, name: str, function: Callable[[T], T_co]) -> None:
         self.name = name
         self.function = function
-        self.__doc__ = getattr(function, "__doc__")
+        self.__doc__ = function.__doc__
 
     @overload
-    def __get__(self, instance: None, owner: Type[T]) -> CachedSlotProperty[T, T_co]:
+    def __get__(self, instance: None, owner: Type[T]) -> Self:
         ...
 
     @overload
@@ -183,7 +167,7 @@ class classproperty(Generic[T_co]):
     def __get__(self, instance: Optional[Any], owner: Type[Any]) -> T_co:
         return self.fget(owner)
 
-    def __set__(self, instance, value) -> None:
+    def __set__(self, instance, value) -> NoReturn:
         raise AttributeError("cannot set attribute")
 
 
@@ -194,10 +178,10 @@ def cached_slot_property(name: str) -> Callable[[Callable[[T], T_co]], CachedSlo
     return decorator
 
 
-class SequenceProxy(Generic[T_co], collections.abc.Sequence):
+class SequenceProxy(Sequence[T_co]):
     """Read-only proxy of a Sequence."""
 
-    def __init__(self, proxied: Sequence[T_co]):
+    def __init__(self, proxied: Sequence[T_co]) -> None:
         self.__proxied = proxied
 
     def __getitem__(self, idx: int) -> T_co:
@@ -243,6 +227,22 @@ def parse_time(timestamp: Optional[str]) -> Optional[datetime.datetime]:
     return None
 
 
+@overload
+def isoformat_utc(dt: datetime.datetime) -> str:
+    ...
+
+
+@overload
+def isoformat_utc(dt: Optional[datetime.datetime]) -> Optional[str]:
+    ...
+
+
+def isoformat_utc(dt: Optional[datetime.datetime]) -> Optional[str]:
+    if dt:
+        return dt.astimezone(datetime.timezone.utc).isoformat()
+    return None
+
+
 def copy_doc(original: Callable) -> Callable[[T], T]:
     def decorator(overriden: T) -> T:
         overriden.__doc__ = original.__doc__
@@ -261,7 +261,7 @@ def deprecated(instead: Optional[str] = None) -> Callable[[Callable[P, T]], Call
             else:
                 msg = f"{func.__name__} is deprecated."
 
-            warn_deprecated(msg, stacklevel=3)
+            warn_deprecated(msg, stacklevel=2)
             return func(*args, **kwargs)
 
         return decorated
@@ -329,36 +329,8 @@ def oauth_url(
     return url
 
 
-def parse_token(token: str) -> Tuple[int, datetime.datetime, bytes]:
-    """Parse a token into its parts
-
-    Returns
-
-    Parameters
-    ----------
-    token: :class:`str`
-        The bot token
-
-    Returns
-    -------
-    Tuple[:class:`int`, :class:`datetime.datetime`, :class:`bytes`]
-        The bot's ID, the time when the token was generated and the hmac.
-    """
-    parts = token.split(".")
-
-    user_id = int(b64decode(parts[0]))
-
-    timestamp = int.from_bytes(b64decode(parts[1] + "=="), "big")
-    created_at = datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc)
-
-    hmac = b64decode(parts[2] + "==")
-
-    return user_id, created_at, hmac
-
-
 def snowflake_time(id: int) -> datetime.datetime:
-    """
-    Parameters
+    """Parameters
     ----------
     id: :class:`int`
         The snowflake ID.
@@ -395,7 +367,7 @@ def time_snowflake(dt: datetime.datetime, high: bool = False) -> int:
         The snowflake representing the time given.
     """
     discord_millis = int(dt.timestamp() * 1000 - DISCORD_EPOCH)
-    return (discord_millis << 22) + (2 ** 22 - 1 if high else 0)
+    return (discord_millis << 22) + (2**22 - 1 if high else 0)
 
 
 def find(predicate: Callable[[T], Any], seq: Iterable[T]) -> Optional[T]:
@@ -417,7 +389,6 @@ def find(predicate: Callable[[T], Any], seq: Iterable[T]) -> Optional[T]:
     seq: :class:`collections.abc.Iterable`
         The iterable to search through.
     """
-
     for element in seq:
         if predicate(element):
             return element
@@ -425,8 +396,7 @@ def find(predicate: Callable[[T], Any], seq: Iterable[T]) -> Optional[T]:
 
 
 def get(iterable: Iterable[T], **attrs: Any) -> Optional[T]:
-    """
-    A helper that returns the first element in the iterable that meets
+    """A helper that returns the first element in the iterable that meets
     all the traits passed in ``attrs``. This is an alternative for
     :func:`~disnake.utils.find`.
 
@@ -442,7 +412,6 @@ def get(iterable: Iterable[T], **attrs: Any) -> Optional[T]:
 
     Examples
     --------
-
     Basic usage:
 
     .. code-block:: python3
@@ -465,10 +434,9 @@ def get(iterable: Iterable[T], **attrs: Any) -> Optional[T]:
     ----------
     iterable
         An iterable to search through.
-    \*\*attrs
+    **attrs
         Keyword arguments that denote attributes to search with.
     """
-
     # global -> local
     _all = all
     attrget = attrgetter
@@ -491,7 +459,7 @@ def get(iterable: Iterable[T], **attrs: Any) -> Optional[T]:
 
 
 def _unique(iterable: Iterable[T]) -> List[T]:
-    return [x for x in dict.fromkeys(iterable)]
+    return list(dict.fromkeys(iterable))
 
 
 def _get_as_snowflake(data: Any, key: str) -> Optional[int]:
@@ -509,17 +477,27 @@ def _maybe_cast(value: V, converter: Callable[[V], T], default: T = None) -> Opt
     return converter(value)
 
 
-def _get_mime_type_for_image(data: bytes):
-    if data.startswith(b"\x89\x50\x4E\x47\x0D\x0A\x1A\x0A"):
+# stdlib mimetypes doesn't know webp in <3.11, so we ship
+# our own map with the needed types
+_mime_type_extensions = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+}
+
+
+def _get_mime_type_for_image(data: bytes) -> str:
+    if data[0:8] == b"\x89\x50\x4E\x47\x0D\x0A\x1A\x0A":
         return "image/png"
     elif data[0:3] == b"\xff\xd8\xff" or data[6:10] in (b"JFIF", b"Exif"):
         return "image/jpeg"
-    elif data.startswith((b"\x47\x49\x46\x38\x37\x61", b"\x47\x49\x46\x38\x39\x61")):
+    elif data[0:6] in (b"\x47\x49\x46\x38\x37\x61", b"\x47\x49\x46\x38\x39\x61"):
         return "image/gif"
-    elif data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+    elif data[0:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "image/webp"
     else:
-        raise InvalidArgument("Unsupported image type given")
+        raise ValueError("Unsupported image type given")
 
 
 def _bytes_to_base64_data(data: bytes) -> str:
@@ -529,9 +507,35 @@ def _bytes_to_base64_data(data: bytes) -> str:
     return fmt.format(mime=mime, data=b64)
 
 
+def _get_extension_for_image(data: bytes) -> Optional[str]:
+    try:
+        mime_type = _get_mime_type_for_image(data)
+    except ValueError:
+        return None
+    return _mime_type_extensions.get(mime_type)
+
+
+@overload
+async def _assetbytes_to_base64_data(data: None) -> None:
+    ...
+
+
+@overload
+async def _assetbytes_to_base64_data(data: AssetBytes) -> str:
+    ...
+
+
+async def _assetbytes_to_base64_data(data: Optional[AssetBytes]) -> Optional[str]:
+    if data is None:
+        return None
+    if not isinstance(data, (bytes, bytearray, memoryview)):
+        data = await data.read()
+    return _bytes_to_base64_data(data)
+
+
 if HAS_ORJSON:
 
-    def _to_json(obj: Any) -> str:  # type: ignore
+    def _to_json(obj: Any) -> str:
         return orjson.dumps(obj).decode("utf-8")
 
     _from_json = orjson.loads  # type: ignore
@@ -555,15 +559,17 @@ def _parse_ratelimit_header(request: Any, *, use_clock: bool = False) -> float:
         return float(reset_after)
 
 
-async def maybe_coroutine(f, *args, **kwargs):
+async def maybe_coroutine(
+    f: Callable[P, Union[Awaitable[T], T]], /, *args: P.args, **kwargs: P.kwargs
+) -> T:
     value = f(*args, **kwargs)
     if _isawaitable(value):
         return await value
     else:
-        return value
+        return value  # type: ignore  # typeguard doesn't narrow in the negative case
 
 
-async def async_all(gen, *, check=_isawaitable):
+async def async_all(gen: Iterable[Union[Awaitable[bool], bool]], *, check=_isawaitable) -> bool:
     for elem in gen:
         if check(elem):
             elem = await elem
@@ -572,28 +578,29 @@ async def async_all(gen, *, check=_isawaitable):
     return True
 
 
-async def sane_wait_for(futures, *, timeout):
+async def sane_wait_for(futures: Iterable[Awaitable[T]], *, timeout: float) -> Set[asyncio.Task[T]]:
     ensured = [asyncio.ensure_future(fut) for fut in futures]
     done, pending = await asyncio.wait(ensured, timeout=timeout, return_when=asyncio.ALL_COMPLETED)
 
     if len(pending) != 0:
-        raise asyncio.TimeoutError()
+        raise asyncio.TimeoutError
 
     return done
 
 
 def get_slots(cls: Type[Any]) -> Iterator[str]:
     for mro in reversed(cls.__mro__):
-        try:
-            yield from mro.__slots__
-        except AttributeError:
-            continue
+        slots = getattr(mro, "__slots__", [])
+        if isinstance(slots, str):
+            yield slots
+        else:
+            yield from slots
 
 
-def compute_timedelta(dt: datetime.datetime):
+def compute_timedelta(dt: datetime.datetime) -> float:
     if dt.tzinfo is None:
         dt = dt.astimezone()
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = utcnow()
     return max((dt - now).total_seconds(), 0)
 
 
@@ -655,7 +662,7 @@ class SnowflakeList(array.array):
 
     if TYPE_CHECKING:
 
-        def __init__(self, data: Iterable[int], *, is_sorted: bool = False):
+        def __init__(self, data: Iterable[int], *, is_sorted: bool = False) -> None:
             ...
 
     def __new__(cls, data: Iterable[int], *, is_sorted: bool = False):
@@ -703,8 +710,7 @@ def resolve_invite(
 def resolve_invite(
     invite: Union[Invite, str], *, with_params: bool = False
 ) -> Union[str, Tuple[str, Dict[str, str]]]:
-    """
-    Resolves an invite from a :class:`~disnake.Invite`, URL or code.
+    """Resolves an invite from a :class:`~disnake.Invite`, URL or code.
 
     Parameters
     ----------
@@ -740,8 +746,7 @@ def resolve_invite(
 
 
 def resolve_template(code: Union[Template, str]) -> str:
-    """
-    Resolves a template code from a :class:`~disnake.Template`, URL or code.
+    """Resolves a template code from a :class:`~disnake.Template`, URL or code.
 
     .. versionadded:: 1.4
 
@@ -774,12 +779,12 @@ _MARKDOWN_ESCAPE_SUBREGEX = "|".join(
 _MARKDOWN_ESCAPE_COMMON = r"^>(?:>>)?\s|\[.+\]\(.+\)"
 
 _MARKDOWN_ESCAPE_REGEX = re.compile(
-    fr"(?P<markdown>{_MARKDOWN_ESCAPE_SUBREGEX}|{_MARKDOWN_ESCAPE_COMMON})", re.MULTILINE
+    rf"(?P<markdown>{_MARKDOWN_ESCAPE_SUBREGEX}|{_MARKDOWN_ESCAPE_COMMON})", re.MULTILINE
 )
 
 _URL_REGEX = r"(?P<url><[^: >]+:\/[^ >]+>|(?:https?|steam):\/\/[^\s<]+[^<.,:;\"\'\]\s])"
 
-_MARKDOWN_STOCK_REGEX = fr"(?P<markdown>[_\\~|\*`]|{_MARKDOWN_ESCAPE_COMMON})"
+_MARKDOWN_STOCK_REGEX = rf"(?P<markdown>[_\\~|\*`]|{_MARKDOWN_ESCAPE_COMMON})"
 
 
 def remove_markdown(text: str, *, ignore_links: bool = True) -> str:
@@ -817,8 +822,7 @@ def remove_markdown(text: str, *, ignore_links: bool = True) -> str:
 
 
 def escape_markdown(text: str, *, as_needed: bool = False, ignore_links: bool = True) -> str:
-    """
-    A helper function that escapes Discord's markdown.
+    """A helper function that escapes Discord's markdown.
 
     Parameters
     ----------
@@ -827,8 +831,8 @@ def escape_markdown(text: str, *, as_needed: bool = False, ignore_links: bool = 
     as_needed: :class:`bool`
         Whether to escape the markdown characters as needed. This
         means that it does not escape extraneous characters if it's
-        not necessary, e.g. ``**hello**`` is escaped into ``\*\*hello**``
-        instead of ``\*\*hello\*\*``. Note however that this can open
+        not necessary, e.g. ``**hello**`` is escaped into ``\\*\\*hello**``
+        instead of ``\\*\\*hello\\*\\*``. Note however that this can open
         you up to some clever syntax abuse. Defaults to ``False``.
     ignore_links: :class:`bool`
         Whether to leave links alone when escaping markdown. For example,
@@ -841,7 +845,6 @@ def escape_markdown(text: str, *, as_needed: bool = False, ignore_links: bool = 
     :class:`str`
         The text with the markdown special characters escaped with a slash.
     """
-
     if not as_needed:
 
         def replacement(match):
@@ -883,19 +886,24 @@ def escape_mentions(text: str) -> str:
     :class:`str`
         The text with the mentions removed.
     """
-    return re.sub(r"@(everyone|here|[!&]?[0-9]{17,20})", "@\u200b\\1", text)
+    return re.sub(r"@(everyone|here|[!&]?[0-9]{17,19})", "@\u200b\\1", text)
 
 
 # Custom docstring parser
 
 
-class _DocstringParam(TypedDict):
+class _DocstringLocalizationsMixin(TypedDict):
+    localization_key_name: Optional[str]
+    localization_key_desc: Optional[str]
+
+
+class _DocstringParam(_DocstringLocalizationsMixin):
     name: str
     type: None
     description: str
 
 
-class _ParsedDocstring(TypedDict):
+class _ParsedDocstring(_DocstringLocalizationsMixin):
     description: str
     params: Dict[str, _DocstringParam]
 
@@ -923,6 +931,7 @@ def _get_next_header_line(lines: List[str], underline: str, start: int = 0) -> i
         clean_line = line.rstrip()
         if (
             i > 0
+            and len(clean_line) > 0
             and clean_line.count(underline) == len(clean_line)
             and _count_left_spaces(lines[i - 1]) == 0
             and len(lines[i - 1].rstrip()) <= len(clean_line)
@@ -934,6 +943,15 @@ def _get_next_header_line(lines: List[str], underline: str, start: int = 0) -> i
 def _get_description(lines: List[str]) -> str:
     end = _get_next_header_line(lines, "-")
     return "\n".join(lines[:end]).strip()
+
+
+def _extract_localization_key(desc: str) -> Tuple[str, Tuple[Optional[str], Optional[str]]]:
+    match = re.search(r"\{\{(.*?)\}\}", desc)
+    if match:
+        desc = desc.replace(match.group(0), "").strip()
+        loc_key = match.group(1).strip()
+        return desc, (f"{loc_key}_NAME", f"{loc_key}_DESCRIPTION")
+    return desc, (None, None)
 
 
 def _get_option_desc(lines: List[str]) -> Dict[str, _DocstringParam]:
@@ -953,8 +971,15 @@ def _get_option_desc(lines: List[str]) -> Dict[str, _DocstringParam]:
         elif maybe_type:
             desc = maybe_type
         if desc is not None:
+            desc, (loc_key_name, loc_key_desc) = _extract_localization_key(desc)
             # TODO: maybe parse types in the future
-            options[param] = {"name": param, "type": None, "description": desc}
+            options[param] = {
+                "name": param,
+                "type": None,
+                "description": desc,
+                "localization_key_name": loc_key_name,
+                "localization_key_desc": loc_key_desc,
+            }
 
     desc_lines: List[str] = []
     param: Optional[str] = None
@@ -973,7 +998,7 @@ def _get_option_desc(lines: List[str]) -> Dict[str, _DocstringParam]:
                 param = line.strip()
                 maybe_type = None
             desc_lines = []
-        elif spaces > 0:
+        else:
             desc_lines.append(line.strip())
     # After the last iteration
     add_param(param, desc_lines, maybe_type)
@@ -983,9 +1008,20 @@ def _get_option_desc(lines: List[str]) -> Dict[str, _DocstringParam]:
 def parse_docstring(func: Callable) -> _ParsedDocstring:
     doc = _getdoc(func)
     if doc is None:
-        return {"description": "", "params": {}}
+        return {
+            "description": "",
+            "params": {},
+            "localization_key_name": None,
+            "localization_key_desc": None,
+        }
     lines = doc.splitlines()
-    return {"description": _get_description(lines), "params": _get_option_desc(lines)}
+    desc, (loc_key_name, loc_key_desc) = _extract_localization_key(_get_description(lines))
+    return {
+        "description": desc,
+        "localization_key_name": loc_key_name,
+        "localization_key_desc": loc_key_desc,
+        "params": _get_option_desc(lines),
+    }
 
 
 # Chunkers
@@ -1059,15 +1095,19 @@ def as_chunks(iterator: _Iter[T], max_size: int) -> _Iter[List[T]]:
     return _chunk(iterator, max_size)
 
 
-PY_310 = sys.version_info >= (3, 10)
+if sys.version_info >= (3, 10):
+    PY_310 = True
+    from types import UnionType
+else:
+    PY_310 = False
+    UnionType = object()
 
 
 def flatten_literal_params(parameters: Iterable[Any]) -> Tuple[Any, ...]:
     params = []
-    literal_cls = type(Literal[0])
     for p in parameters:
-        if isinstance(p, literal_cls):
-            params.extend(p.__args__)
+        if get_origin(p) is Literal:
+            params.extend(_unique(flatten_literal_params(p.__args__)))
         else:
             params.append(p)
     return tuple(params)
@@ -1094,16 +1134,18 @@ def evaluate_annotation(
     if implicit_str and isinstance(tp, str):
         if tp in cache:
             return cache[tp]
-        evaluated = eval(tp, globals, locals)
+        evaluated = eval(  # noqa: PGH001 # this is how annotations are supposed to be unstringifed
+            tp, globals, locals
+        )
         cache[tp] = evaluated
         return evaluate_annotation(evaluated, globals, locals, cache)
 
     if hasattr(tp, "__args__"):
         implicit_str = True
         is_literal = False
-        args = tp.__args__
+        orig_args = args = tp.__args__
         if not hasattr(tp, "__origin__"):
-            if PY_310 and tp.__class__ is types.UnionType:  # type: ignore
+            if tp.__class__ is UnionType:
                 converted = Union[args]  # type: ignore
                 return evaluate_annotation(converted, globals, locals, cache)
 
@@ -1130,7 +1172,7 @@ def evaluate_annotation(
         ):
             raise TypeError("Literal arguments must be of type str, int, bool, or NoneType.")
 
-        if evaluated_args == args:
+        if evaluated_args == orig_args:
             return tp
 
         try:
@@ -1193,6 +1235,7 @@ def format_dt(dt: Union[datetime.datetime, float], /, style: TimestampStyle = "f
     ----------
     dt: Union[:class:`datetime.datetime`, :class:`int`, :class:`float`]
         The datetime to format.
+        If this is a naive datetime, it is assumed to be local time.
     style: :class:`str`
         The style to format the datetime with. Defaults to ``f``
 
@@ -1215,7 +1258,7 @@ def search_directory(path: str) -> Iterator[str]:
         The path to search for modules
 
     Yields
-    -------
+    ------
     :class:`str`
         The name of the found module. (usable in load_extension)
     """
@@ -1230,9 +1273,71 @@ def search_directory(path: str) -> Iterator[str]:
         raise ValueError(f"Provided path '{abspath}' is not a directory")
 
     prefix = relpath.replace(os.sep, ".")
+    if prefix in ("", "."):
+        prefix = ""
+    else:
+        prefix += "."
 
-    for finder, name, ispkg in pkgutil.iter_modules([path]):
+    for _, name, ispkg in pkgutil.iter_modules([path]):
         if ispkg:
             yield from search_directory(os.path.join(path, name))
         else:
-            yield prefix + "." + name
+            yield prefix + name
+
+
+def as_valid_locale(locale: str) -> Optional[str]:
+    """Converts the provided locale name to a name that is valid for use with the API,
+    for example by returning ``en-US`` for ``en_US``.
+    Returns ``None`` for invalid names.
+
+    .. versionadded:: 2.5
+
+    Parameters
+    ----------
+    locale: :class:`str`
+        The input locale name.
+    """
+    # check for key first (e.g. `en_US`)
+    if locale_type := Locale.__members__.get(locale):
+        return locale_type.value
+
+    # check for value (e.g. `en-US`)
+    try:
+        Locale(locale)
+    except ValueError:
+        pass
+    else:
+        return locale
+
+    # didn't match, try language without country code (e.g. `en` instead of `en-US`)
+    language = re.split(r"[-_]", locale)[0]
+    if language != locale:
+        return as_valid_locale(language)
+    return None
+
+
+def humanize_list(values: List[str], combine: str) -> str:
+    if len(values) > 2:
+        return f"{', '.join(values[:-1])}, {combine} {values[-1]}"
+    elif len(values) == 0:
+        return "<none>"
+    else:
+        return f" {combine} ".join(values)
+
+
+# Similar to typing.assert_never, but returns instead of raising (i.e. has no runtime effect).
+# This is only to avoid "unreachable code", which pyright doesn't type-check.
+def assert_never(arg: Never, /) -> None:
+    pass
+
+
+# n.b. This must be imported and used as @ _overload_with_permissions (without the space)
+# this is used by the libcst parser and has no runtime purpose
+# it is merely a marker not unlike pytest.mark
+def _overload_with_permissions(func: T) -> T:
+    return func
+
+
+# this is used as a marker for functions or classes that were created by codemodding
+def _generated(func: T) -> T:
+    return func
