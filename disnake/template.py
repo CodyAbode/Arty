@@ -1,41 +1,18 @@
-"""
-The MIT License (MIT)
-
-Copyright (c) 2015-2021 Rapptz
-Copyright (c) 2021-present Disnake Development
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the "Software"),
-to deal in the Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the
-Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-"""
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, NoReturn, Optional
 
-from .enums import VoiceRegion
 from .guild import Guild
-from .utils import MISSING, _bytes_to_base64_data, parse_time
+from .utils import MISSING, _assetbytes_to_base64_data, parse_time
 
 __all__ = ("Template",)
 
 if TYPE_CHECKING:
     import datetime
 
+    from .asset import AssetBytes
     from .state import ConnectionState
     from .types.template import Template as TemplatePayload
     from .user import User
@@ -44,12 +21,12 @@ if TYPE_CHECKING:
 class _FriendlyHttpAttributeErrorHelper:
     __slots__ = ()
 
-    def __getattr__(self, attr):
+    def __getattr__(self, attr) -> NoReturn:
         raise AttributeError("PartialTemplateState does not support http methods.")
 
 
 class _PartialTemplateState:
-    def __init__(self, *, state):
+    def __init__(self, *, state) -> None:
         self.__state = state
         self.http = _FriendlyHttpAttributeErrorHelper()
 
@@ -84,7 +61,7 @@ class _PartialTemplateState:
     async def query_members(self, **kwargs: Any):
         return []
 
-    def __getattr__(self, attr):
+    def __getattr__(self, attr) -> NoReturn:
         raise AttributeError(f"PartialTemplateState does not support {attr!r}.")
 
 
@@ -169,31 +146,40 @@ class Template:
             f" creator={self.creator!r} source_guild={self.source_guild!r} is_dirty={self.is_dirty}>"
         )
 
-    async def create_guild(
-        self, name: str, region: Optional[VoiceRegion] = None, icon: Any = None
-    ) -> Guild:
+    async def create_guild(self, name: str, icon: Optional[AssetBytes] = None) -> Guild:
         """|coro|
 
         Creates a :class:`.Guild` using the template.
 
         Bot accounts in more than 10 guilds are not allowed to create guilds.
 
+        .. versionchanged:: 2.5
+            Removed the ``region`` parameter.
+
+        .. versionchanged:: 2.6
+            Raises :exc:`ValueError` instead of ``InvalidArgument``.
+
         Parameters
         ----------
         name: :class:`str`
             The name of the guild.
-        region: :class:`.VoiceRegion`
-            The region for the voice communication server.
-            Defaults to :attr:`.VoiceRegion.us_west`.
-        icon: :class:`bytes`
-            The :term:`py:bytes-like object` representing the icon. See :meth:`.ClientUser.edit`
-            for more details on what is expected.
+        icon: Optional[|resource_type|]
+            The icon of the guild.
+            See :meth:`.ClientUser.edit` for more details on what is expected.
+
+            .. versionchanged:: 2.5
+                Now accepts various resource types in addition to :class:`bytes`.
+
 
         Raises
         ------
+        NotFound
+            The ``icon`` asset couldn't be found.
         HTTPException
             Guild creation failed.
-        InvalidArgument
+        TypeError
+            The ``icon`` asset is a lottie sticker (see :func:`Sticker.read`).
+        ValueError
             Invalid icon image format given. Must be PNG or JPG.
 
         Returns
@@ -202,13 +188,9 @@ class Template:
             The guild created. This is not the same guild that is
             added to cache.
         """
-        if icon is not None:
-            icon = _bytes_to_base64_data(icon)
+        icon_data = await _assetbytes_to_base64_data(icon)
 
-        region = region or VoiceRegion.us_west
-        region_value = region.value
-
-        data = await self._state.http.create_from_template(self.code, name, region_value, icon)
+        data = await self._state.http.create_from_template(self.code, name, icon_data)
         return Guild(data=data, state=self._state)
 
     async def sync(self) -> Template:
@@ -238,7 +220,6 @@ class Template:
         :class:`Template`
             The newly edited template.
         """
-
         data = await self._state.http.sync_template(self.source_guild.id, self.code)
         return Template(state=self._state, data=data)
 

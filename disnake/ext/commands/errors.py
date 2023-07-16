@@ -1,33 +1,11 @@
-"""
-The MIT License (MIT)
-
-Copyright (c) 2015-2021 Rapptz
-Copyright (c) 2021-present Disnake Development
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the "Software"),
-to deal in the Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the
-Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-"""
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable, List, Optional, Tuple, Type, Union
 
 from disnake.errors import ClientException, DiscordException
+from disnake.utils import humanize_list
 
 if TYPE_CHECKING:
     from inspect import Parameter
@@ -37,9 +15,8 @@ if TYPE_CHECKING:
     from disnake.types.snowflake import Snowflake, SnowflakeList
 
     from .context import Context
-    from .converter import Converter
     from .cooldowns import BucketType, Cooldown
-    from .flags import Flag
+    from .flag_converter import Flag
 
 
 __all__ = (
@@ -72,8 +49,10 @@ __all__ = (
     "BadInviteArgument",
     "EmojiNotFound",
     "GuildStickerNotFound",
+    "GuildScheduledEventNotFound",
     "PartialEmojiConversionFailure",
     "BadBoolArgument",
+    "LargeIntConversionFailure",
     "MissingRole",
     "BotMissingRole",
     "MissingAnyRole",
@@ -104,14 +83,13 @@ __all__ = (
 
 
 class CommandError(DiscordException):
-    """
-    The base exception type for all command related errors.
+    """The base exception type for all command related errors.
 
     This inherits from :exc:`disnake.DiscordException`.
 
     This exception and exceptions inherited from it are handled
     in a special way as they are caught and passed into a special event
-    from :class:`.Bot`\, :func:`.on_command_error`.
+    from :class:`.Bot`\\, :func:`.on_command_error`.
     """
 
     def __init__(self, message: Optional[str] = None, *args: Any) -> None:
@@ -130,7 +108,7 @@ class ConversionError(CommandError):
 
     Attributes
     ----------
-    converter: :class:`disnake.ext.commands.Converter`
+    converter: :class:`.Converter`
         The converter that failed.
     original: :exc:`Exception`
         The original exception that was raised. You can also get this via
@@ -518,6 +496,24 @@ class GuildStickerNotFound(BadArgument):
         super().__init__(f'Sticker "{argument}" not found.')
 
 
+class GuildScheduledEventNotFound(BadArgument):
+    """Exception raised when the bot cannot find the scheduled event.
+
+    This inherits from :exc:`BadArgument`
+
+    .. versionadded:: 2.5
+
+    Attributes
+    ----------
+    argument: :class:`str`
+        The scheduled event ID/URL/name supplied by the caller that was not found.
+    """
+
+    def __init__(self, argument: str) -> None:
+        self.argument: str = argument
+        super().__init__(f'Scheduled event "{argument}" not found.')
+
+
 class BadBoolArgument(BadArgument):
     """Exception raised when a boolean argument was not convertable.
 
@@ -534,6 +530,24 @@ class BadBoolArgument(BadArgument):
     def __init__(self, argument: str) -> None:
         self.argument: str = argument
         super().__init__(f"{argument} is not a recognised boolean option")
+
+
+class LargeIntConversionFailure(BadArgument):
+    """Exception raised when a large integer argument was not able to be converted.
+
+    This inherits from :exc:`BadArgument`
+
+    .. versionadded:: 2.5
+
+    Attributes
+    ----------
+    argument: :class:`str`
+        The argument that could not be converted to an integer.
+    """
+
+    def __init__(self, argument: str) -> None:
+        self.argument: str = argument
+        super().__init__(f"{argument} is not able to be converted to an integer")
 
 
 class DisabledCommand(CommandError):
@@ -602,9 +616,8 @@ class MaxConcurrencyReached(CommandError):
         self.number: int = number
         self.per: BucketType = per
         name = per.name
-        suffix = "per %s" % name if per.name != "default" else "globally"
-        plural = "%s times %s" if number > 1 else "%s time %s"
-        fmt = plural % (number, suffix)
+        suffix = f"per {name}" if per.name != "default" else "globally"
+        fmt = f"{number} times {suffix}" if number > 1 else f"{number} time {suffix}"
         super().__init__(
             f"Too many people are using this command. It can only be used {fmt} concurrently."
         )
@@ -669,11 +682,7 @@ class MissingAnyRole(CheckFailure):
         self.missing_roles: SnowflakeList = missing_roles
 
         missing = [f"'{role}'" for role in missing_roles]
-
-        if len(missing) > 2:
-            fmt = "{}, or {}".format(", ".join(missing[:-1]), missing[-1])
-        else:
-            fmt = " or ".join(missing)
+        fmt = humanize_list(missing, "or")
 
         message = f"You are missing at least one of the required roles: {fmt}"
         super().__init__(message)
@@ -699,11 +708,7 @@ class BotMissingAnyRole(CheckFailure):
         self.missing_roles: SnowflakeList = missing_roles
 
         missing = [f"'{role}'" for role in missing_roles]
-
-        if len(missing) > 2:
-            fmt = "{}, or {}".format(", ".join(missing[:-1]), missing[-1])
-        else:
-            fmt = " or ".join(missing)
+        fmt = humanize_list(missing, "or")
 
         message = f"Bot is missing at least one of the required roles: {fmt}"
         super().__init__(message)
@@ -746,11 +751,8 @@ class MissingPermissions(CheckFailure):
             perm.replace("_", " ").replace("guild", "server").title()
             for perm in missing_permissions
         ]
+        fmt = humanize_list(missing, "and")
 
-        if len(missing) > 2:
-            fmt = "{}, and {}".format(", ".join(missing[:-1]), missing[-1])
-        else:
-            fmt = " and ".join(missing)
         message = f"You are missing {fmt} permission(s) to run this command."
         super().__init__(message, *args)
 
@@ -774,11 +776,8 @@ class BotMissingPermissions(CheckFailure):
             perm.replace("_", " ").replace("guild", "server").title()
             for perm in missing_permissions
         ]
+        fmt = humanize_list(missing, "and")
 
-        if len(missing) > 2:
-            fmt = "{}, and {}".format(", ".join(missing[:-1]), missing[-1])
-        else:
-            fmt = " and ".join(missing)
         message = f"Bot requires {fmt} permission(s) to run this command."
         super().__init__(message, *args)
 
@@ -815,10 +814,7 @@ class BadUnionArgument(UserInputError):
                 return x.__class__.__name__
 
         to_string = [_get_name(x) for x in converters]
-        if len(to_string) > 2:
-            fmt = "{}, or {}".format(", ".join(to_string[:-1]), to_string[-1])
-        else:
-            fmt = " or ".join(to_string)
+        fmt = humanize_list(to_string, "or")
 
         super().__init__(f'Could not convert "{param.name}" into {fmt}.')
 
@@ -848,11 +844,8 @@ class BadLiteralArgument(UserInputError):
         self.literals: Tuple[Any, ...] = literals
         self.errors: List[CommandError] = errors
 
-        to_string = [repr(l) for l in literals]
-        if len(to_string) > 2:
-            fmt = "{}, or {}".format(", ".join(to_string[:-1]), to_string[-1])
-        else:
-            fmt = " or ".join(to_string)
+        to_string = [repr(literal) for literal in literals]
+        fmt = humanize_list(to_string, "or")
 
         super().__init__(f'Could not convert "{param.name}" into the literal {fmt}.')
 
@@ -1049,7 +1042,7 @@ class TooManyFlags(FlagError):
 
     Attributes
     ----------
-    flag: :class:`~disnake.ext.commands.Flag`
+    flag: :class:`.Flag`
         The flag that received too many values.
     values: List[:class:`str`]
         The values that were passed.
@@ -1072,7 +1065,7 @@ class BadFlagArgument(FlagError):
 
     Attributes
     ----------
-    flag: :class:`~disnake.ext.commands.Flag`
+    flag: :class:`.Flag`
         The flag that failed to convert.
     """
 
@@ -1095,7 +1088,7 @@ class MissingRequiredFlag(FlagError):
 
     Attributes
     ----------
-    flag: :class:`~disnake.ext.commands.Flag`
+    flag: :class:`.Flag`
         The required flag that was not found.
     """
 
@@ -1113,7 +1106,7 @@ class MissingFlagArgument(FlagError):
 
     Attributes
     ----------
-    flag: :class:`~disnake.ext.commands.Flag`
+    flag: :class:`.Flag`
         The flag that did not get a value.
     """
 

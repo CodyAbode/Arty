@@ -1,44 +1,24 @@
-"""
-The MIT License (MIT)
-
-Copyright (c) 2015-2021 Rapptz
-Copyright (c) 2021-present Disnake Development
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the "Software"),
-to deal in the Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the
-Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-"""
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any, Dict, Optional, Type, TypeVar, Union
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union
 
 from . import utils
 from .asset import Asset, AssetMixin
-from .errors import InvalidArgument
 
 __all__ = ("PartialEmoji",)
 
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from typing_extensions import Self
+
+    from .emoji import Emoji
     from .state import ConnectionState
-    from .types.message import PartialEmoji as PartialEmojiPayload
+    from .types.activity import ActivityEmoji as ActivityEmojiPayload
+    from .types.emoji import Emoji as EmojiPayload, PartialEmoji as PartialEmojiPayload
 
 
 class _EmojiTag:
@@ -48,9 +28,6 @@ class _EmojiTag:
 
     def _to_partial(self) -> PartialEmoji:
         raise NotImplementedError
-
-
-PE = TypeVar("PE", bound="PartialEmoji")
 
 
 class PartialEmoji(_EmojiTag, AssetMixin):
@@ -77,7 +54,7 @@ class PartialEmoji(_EmojiTag, AssetMixin):
 
         .. describe:: str(x)
 
-            Returns the emoji rendered for disnake.
+            Returns the emoji rendered for Discord.
 
     Attributes
     ----------
@@ -91,23 +68,25 @@ class PartialEmoji(_EmojiTag, AssetMixin):
         The ID of the custom emoji, if applicable.
     """
 
-    __slots__ = ("animated", "name", "id", "_state")
+    __slots__ = ("animated", "name", "id")
 
     _CUSTOM_EMOJI_RE = re.compile(
-        r"<?(?P<animated>a)?:?(?P<name>[A-Za-z0-9\_]+):(?P<id>[0-9]{13,20})>?"
+        r"<?(?P<animated>a)?:?(?P<name>[A-Za-z0-9\_]+):(?P<id>[0-9]{17,19})>?"
     )
 
     if TYPE_CHECKING:
         id: Optional[int]
 
-    def __init__(self, *, name: str, animated: bool = False, id: Optional[int] = None):
+    def __init__(self, *, name: str, animated: bool = False, id: Optional[int] = None) -> None:
         self.animated = animated
         self.name = name
         self.id = id
-        self._state: Optional[ConnectionState] = None
+        self._state = None
 
     @classmethod
-    def from_dict(cls: Type[PE], data: Union[PartialEmojiPayload, Dict[str, Any]]) -> PE:
+    def from_dict(
+        cls, data: Union[PartialEmojiPayload, ActivityEmojiPayload, Dict[str, Any]]
+    ) -> Self:
         return cls(
             animated=data.get("animated", False),
             id=utils._get_as_snowflake(data, "id"),
@@ -115,7 +94,7 @@ class PartialEmoji(_EmojiTag, AssetMixin):
         )
 
     @classmethod
-    def from_str(cls: Type[PE], value: str) -> PE:
+    def from_str(cls, value: str) -> Self:
         """Converts a Discord string representation of an emoji to a :class:`PartialEmoji`.
 
         The formats accepted are:
@@ -149,10 +128,11 @@ class PartialEmoji(_EmojiTag, AssetMixin):
 
         return cls(name=value, id=None, animated=False)
 
-    def to_dict(self) -> Dict[str, Any]:
-        o: Dict[str, Any] = {"name": self.name}
-        if self.id:
-            o["id"] = self.id
+    def to_dict(self) -> EmojiPayload:
+        o: EmojiPayload = {
+            "name": self.name,
+            "id": self.id,
+        }
         if self.animated:
             o["animated"] = self.animated
         return o
@@ -162,13 +142,13 @@ class PartialEmoji(_EmojiTag, AssetMixin):
 
     @classmethod
     def with_state(
-        cls: Type[PE],
+        cls,
         state: ConnectionState,
         *,
         name: str,
         animated: bool = False,
         id: Optional[int] = None,
-    ) -> PE:
+    ) -> Self:
         self = cls(name=name, animated=animated, id=id)
         self._state = state
         return self
@@ -180,7 +160,7 @@ class PartialEmoji(_EmojiTag, AssetMixin):
             return f"<a:{self.name}:{self.id}>"
         return f"<:{self.name}:{self.id}>"
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return (
             f"<{self.__class__.__name__} animated={self.animated} name={self.name!r} id={self.id}>"
         )
@@ -246,9 +226,12 @@ class PartialEmoji(_EmojiTag, AssetMixin):
 
         Retrieves the data of this emoji as a :class:`bytes` object.
 
+        .. versionchanged:: 2.6
+            Raises :exc:`TypeError` instead of ``InvalidArgument``.
+
         Raises
         ------
-        InvalidArgument
+        TypeError
             The emoji is not a custom emoji.
         DiscordException
             There was no internal connection state.
@@ -263,6 +246,24 @@ class PartialEmoji(_EmojiTag, AssetMixin):
             The content of the asset.
         """
         if self.is_unicode_emoji():
-            raise InvalidArgument("PartialEmoji is not a custom emoji")
+            raise TypeError("PartialEmoji is not a custom emoji")
 
         return await super().read()
+
+    # utility method for unusual emoji model in forums
+    # (e.g. default reaction, tag emoji)
+    @staticmethod
+    def _emoji_to_name_id(
+        emoji: Optional[Union[str, Emoji, PartialEmoji]]
+    ) -> Tuple[Optional[str], Optional[int]]:
+        if emoji is None:
+            return None, None
+
+        if isinstance(emoji, str):
+            emoji = PartialEmoji.from_str(emoji)
+
+        # note: API only supports exactly one of `name` and `id` being set
+        if emoji.id:
+            return None, emoji.id
+        else:
+            return emoji.name, None

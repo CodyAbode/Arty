@@ -1,85 +1,80 @@
-"""
-The MIT License (MIT)
-
-Copyright (c) 2015-2021 Rapptz
-Copyright (c) 2021-present Disnake Development
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the "Software"),
-to deal in the Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the
-Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-"""
+# SPDX-License-Identifier: MIT
 
 import argparse
+import importlib.metadata
 import platform
 import sys
 from pathlib import Path
+from typing import Union
 
 import aiohttp
-import pkg_resources
 
 import disnake
 
 
-def show_version():
+def show_version() -> None:
     entries = []
 
+    sys_ver = sys.version_info
     entries.append(
-        "- Python v{0.major}.{0.minor}.{0.micro}-{0.releaselevel}".format(sys.version_info)
+        f"- Python v{sys_ver.major}.{sys_ver.minor}.{sys_ver.micro}-{sys_ver.releaselevel}"
     )
-    version_info = disnake.version_info
-    entries.append("- disnake v{0.major}.{0.minor}.{0.micro}-{0.releaselevel}".format(version_info))
-    if pkg := pkg_resources.get_distribution("disnake"):
-        entries.append(f"    - disnake pkg_resources: v{pkg.version}")
+    disnake_ver = disnake.version_info
+    entries.append(
+        f"- disnake v{disnake_ver.major}.{disnake_ver.minor}.{disnake_ver.micro}-{disnake_ver.releaselevel}"
+    )
+    try:
+        version = importlib.metadata.version("disnake")
+    except importlib.metadata.PackageNotFoundError:
+        pass
+    else:
+        entries.append(f"    - disnake importlib.metadata: v{version}")
 
     entries.append(f"- aiohttp v{aiohttp.__version__}")
     uname = platform.uname()
-    entries.append("- system info: {0.system} {0.release} {0.version}".format(uname))
+    entries.append(f"- system info: {uname.system} {uname.release} {uname.version} {uname.machine}")
     print("\n".join(entries))
 
 
-def core(parser, args):
+def core(parser: argparse.ArgumentParser, args) -> None:
+    # this method runs when no subcommands are provided
+    # as such, we can assume that we want to print help
     if args.version:
         show_version()
+    else:
+        parser.print_help()
 
 
+_interaction_bot_init = """super().__init__(**kwargs)"""
+_commands_bot_init = (
+    'super().__init__(command_prefix=commands.when_mentioned_or("{prefix}"), **kwargs)'
+)
 _bot_template = """#!/usr/bin/env python3
 
 from disnake.ext import commands
 import disnake
 import config
 
+
 class Bot(commands.{base}):
     def __init__(self, **kwargs):
-        super().__init__(command_prefix=commands.when_mentioned_or('{prefix}'), **kwargs)
+        {init}
         for cog in config.cogs:
             try:
                 self.load_extension(cog)
             except Exception as exc:
-                print(f'Could not load extension {{cog}} due to {{exc.__class__.__name__}}: {{exc}}')
+                print(f"Could not load extension {{cog}} due to {{exc.__class__.__name__}}: {{exc}}")
 
     async def on_ready(self):
-        print(f'Logged on as {{self.user}} (ID: {{self.user.id}})')
+        print(f"Logged on as {{self.user}} (ID: {{self.user.id}})")
 
 
 bot = Bot()
 
 # write general commands here
 
-bot.run(config.token)
+if __name__ == "__main__":
+    bot.run(config.token)
 """
 
 _gitignore_template = """# Byte-compiled / optimized / DLL files
@@ -169,7 +164,7 @@ _base_table = {**_ascii_table, **_byte_table}
 _translation_table = str.maketrans(_base_table)
 
 
-def to_path(parser, name, *, replace_spaces=False):
+def to_path(parser, name: Union[str, Path], *, replace_spaces: bool = False):
     if isinstance(name, Path):
         return name
 
@@ -207,7 +202,7 @@ def to_path(parser, name, *, replace_spaces=False):
     return Path(name)
 
 
-def newbot(parser, args):
+def newbot(parser, args) -> None:
     new_directory = to_path(parser, args.directory) / to_path(parser, args.name)
 
     # as a note exist_ok for Path is a 3.5+ only feature
@@ -234,8 +229,13 @@ def newbot(parser, args):
 
     try:
         with open(str(new_directory / "bot.py"), "w", encoding="utf-8") as fp:
-            base = "Bot" if not args.sharded else "AutoShardedBot"
-            fp.write(_bot_template.format(base=base, prefix=args.prefix))
+            if args.interaction_client:
+                init = _interaction_bot_init
+                base = "AutoShardedInteractionBot" if args.sharded else "InteractionBot"
+            else:
+                init = _commands_bot_init.format(prefix=args.prefix)
+                base = "AutoShardedBot" if args.sharded else "Bot"
+            fp.write(_bot_template.format(base=base, init=init))
     except OSError as exc:
         parser.error(f"could not create bot file ({exc})")
 
@@ -249,7 +249,7 @@ def newbot(parser, args):
     print("successfully made bot at", new_directory)
 
 
-def newcog(parser, args):
+def newcog(parser, args) -> None:
     cog_dir = to_path(parser, args.directory)
     try:
         cog_dir.mkdir(exist_ok=True)
@@ -283,7 +283,7 @@ def newcog(parser, args):
         print("successfully made cog at", directory)
 
 
-def add_newbot_args(subparser):
+def add_newbot_args(subparser) -> None:
     parser = subparser.add_parser("newbot", help="creates a command bot project quickly")
     parser.set_defaults(func=newbot)
 
@@ -291,16 +291,26 @@ def add_newbot_args(subparser):
     parser.add_argument(
         "directory", help="the directory to place it in (default: .)", nargs="?", default=Path.cwd()
     )
-    parser.add_argument(
+
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
         "--prefix", help="the bot prefix (default: $)", default="$", metavar="<prefix>"
     )
-    parser.add_argument("--sharded", help="whether to use AutoShardedBot", action="store_true")
+    group.add_argument(
+        "--app-commands-only",
+        help="whether to only process application commands",
+        action="store_true",
+        dest="interaction_client",
+    )
+    parser.add_argument(
+        "--sharded", help="whether to use an automatically sharded bot", action="store_true"
+    )
     parser.add_argument(
         "--no-git", help="do not create a .gitignore file", action="store_true", dest="no_git"
     )
 
 
-def add_newcog_args(subparser):
+def add_newcog_args(subparser) -> None:
     parser = subparser.add_parser("newcog", help="creates a new cog template quickly")
     parser.set_defaults(func=newcog)
 
@@ -332,7 +342,7 @@ def parse_args():
     return parser, parser.parse_args()
 
 
-def main():
+def main() -> None:
     parser, args = parse_args()
     args.func(parser, args)
 

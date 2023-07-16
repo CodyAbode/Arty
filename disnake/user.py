@@ -1,43 +1,23 @@
-"""
-The MIT License (MIT)
-
-Copyright (c) 2015-2021 Rapptz
-Copyright (c) 2021-present Disnake Development
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the "Software"),
-to deal in the Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the
-Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-"""
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type, TypeVar, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import disnake.abc
 
 from .asset import Asset
 from .colour import Colour
-from .enums import DefaultAvatar
+from .enums import Locale, try_enum
 from .flags import PublicUserFlags
-from .utils import MISSING, _bytes_to_base64_data, snowflake_time
+from .utils import MISSING, _assetbytes_to_base64_data, snowflake_time
 
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from typing_extensions import Self
+
+    from .asset import AssetBytes
     from .channel import DMChannel
     from .guild import Guild
     from .message import Message
@@ -51,8 +31,6 @@ __all__ = (
     "ClientUser",
 )
 
-BU = TypeVar("BU", bound="BaseUser")
-
 
 class _UserTag:
     __slots__ = ()
@@ -64,6 +42,7 @@ class BaseUser(_UserTag):
         "name",
         "id",
         "discriminator",
+        "global_name",
         "_avatar",
         "_banner",
         "_accent_colour",
@@ -77,6 +56,7 @@ class BaseUser(_UserTag):
         name: str
         id: int
         discriminator: str
+        global_name: Optional[str]
         bot: bool
         system: bool
         _state: ConnectionState
@@ -93,12 +73,16 @@ class BaseUser(_UserTag):
 
     def __repr__(self) -> str:
         return (
-            f"<BaseUser id={self.id} name={self.name!r} discriminator={self.discriminator!r}"
-            f" bot={self.bot} system={self.system}>"
+            f"<BaseUser id={self.id} name={self.name!r} global_name={self.global_name!r}"
+            f" discriminator={self.discriminator!r} bot={self.bot} system={self.system}>"
         )
 
     def __str__(self) -> str:
-        return f"{self.name}#{self.discriminator}"
+        discriminator = self.discriminator
+        if discriminator == "0":
+            return self.name
+        # legacy behavior
+        return f"{self.name}#{discriminator}"
 
     def __eq__(self, other: Any) -> bool:
         return isinstance(other, _UserTag) and other.id == self.id
@@ -113,6 +97,7 @@ class BaseUser(_UserTag):
         self.name = data["username"]
         self.id = int(data["id"])
         self.discriminator = data["discriminator"]
+        self.global_name = data.get("global_name")
         self._avatar = data["avatar"]
         self._banner = data.get("banner", None)
         self._accent_colour = data.get("accent_color", None)
@@ -121,12 +106,13 @@ class BaseUser(_UserTag):
         self.system = data.get("system", False)
 
     @classmethod
-    def _copy(cls: Type[BU], user: BU) -> BU:
+    def _copy(cls, user: BaseUser) -> Self:
         self = cls.__new__(cls)  # bypass __init__
 
         self.name = user.name
         self.id = user.id
         self.discriminator = user.discriminator
+        self.global_name = user.global_name
         self._avatar = user._avatar
         self._banner = user._banner
         self._accent_colour = user._accent_colour
@@ -142,7 +128,9 @@ class BaseUser(_UserTag):
             "id": self.id,
             "avatar": self._avatar,
             "discriminator": self.discriminator,
+            "global_name": self.global_name,
             "bot": self.bot,
+            "public_flags": self._public_flags,
         }
 
     @property
@@ -163,8 +151,17 @@ class BaseUser(_UserTag):
 
     @property
     def default_avatar(self) -> Asset:
-        """:class:`Asset`: Returns the default avatar for a given user. This is calculated by the user's discriminator."""
-        return Asset._from_default_avatar(self._state, int(self.discriminator) % len(DefaultAvatar))
+        """:class:`Asset`: Returns the default avatar for a given user.
+
+        .. versionchanged:: 2.9
+            Added handling for users migrated to the new username system without discriminators.
+        """
+        if self.discriminator == "0":
+            index = (self.id >> 22) % 6
+        else:
+            # legacy behavior
+            index = int(self.discriminator) % 5
+        return Asset._from_default_avatar(self._state, index)
 
     @property
     def display_avatar(self) -> Asset:
@@ -254,11 +251,13 @@ class BaseUser(_UserTag):
     def display_name(self) -> str:
         """:class:`str`: Returns the user's display name.
 
-        For regular users this is just their username, but
-        if they have a guild specific nickname then that
-        is returned instead.
+        This is their :attr:`global name <.global_name>` if set,
+        or their :attr:`username <.name>` otherwise.
+
+        .. versionchanged:: 2.9
+            Added :attr:`.global_name`.
         """
-        return self.name
+        return self.global_name or self.name
 
     def mentioned_in(self, message: Message) -> bool:
         """Checks if the user is mentioned in the specified message.
@@ -273,7 +272,6 @@ class BaseUser(_UserTag):
         :class:`bool`
             Indicates if the user is mentioned in the message.
         """
-
         if message.mention_everyone:
             return True
 
@@ -299,7 +297,7 @@ class ClientUser(BaseUser):
 
         .. describe:: str(x)
 
-            Returns the user's name with discriminator.
+            Returns the user's username (with discriminator, if not migrated to new system yet).
 
     Attributes
     ----------
@@ -308,7 +306,14 @@ class ClientUser(BaseUser):
     id: :class:`int`
         The user's unique ID.
     discriminator: :class:`str`
-        The user's discriminator. This is given when the username has conflicts.
+        The user's discriminator.
+
+    global_name: Optional[:class:`str`]
+        The user's global display name, if set.
+        This takes precedence over :attr:`.name` when shown.
+
+        .. versionadded:: 2.9
+
     bot: :class:`bool`
         Specifies if the user is a bot account.
     system: :class:`bool`
@@ -318,8 +323,12 @@ class ClientUser(BaseUser):
 
     verified: :class:`bool`
         Specifies if the user's email is verified.
-    locale: Optional[:class:`str`]
+    locale: Optional[:class:`Locale`]
         The IETF language tag used to identify the language the user is using.
+
+        .. versionchanged:: 2.5
+            Changed to :class:`Locale` instead of :class:`str`.
+
     mfa_enabled: :class:`bool`
         Specifies if the user has MFA turned on and working.
     """
@@ -328,7 +337,7 @@ class ClientUser(BaseUser):
 
     if TYPE_CHECKING:
         verified: bool
-        locale: Optional[str]
+        locale: Optional[Locale]
         mfa_enabled: bool
         _flags: int
 
@@ -337,48 +346,58 @@ class ClientUser(BaseUser):
 
     def __repr__(self) -> str:
         return (
-            f"<ClientUser id={self.id} name={self.name!r} discriminator={self.discriminator!r}"
+            f"<ClientUser id={self.id} name={self.name!r} global_name={self.global_name!r} discriminator={self.discriminator!r}"
             f" bot={self.bot} verified={self.verified} mfa_enabled={self.mfa_enabled}>"
         )
 
     def _update(self, data: UserPayload) -> None:
         super()._update(data)
-        # There's actually an Optional[str] phone field as well but I won't use it
         self.verified = data.get("verified", False)
-        self.locale = data.get("locale")
+        locale = data.get("locale")
+        self.locale = try_enum(Locale, locale) if locale else None
         self._flags = data.get("flags", 0)
         self.mfa_enabled = data.get("mfa_enabled", False)
 
-    async def edit(self, *, username: str = MISSING, avatar: bytes = MISSING) -> ClientUser:
+    async def edit(
+        self, *, username: str = MISSING, avatar: Optional[AssetBytes] = MISSING
+    ) -> ClientUser:
         """|coro|
 
         Edits the current profile of the client.
 
         .. note::
 
-            To upload an avatar, a :term:`py:bytes-like object` must be passed in that
-            represents the image being uploaded. If this is done through a file
-            then the file must be opened via ``open('some_filename', 'rb')`` and
-            the :term:`py:bytes-like object` is given through the use of ``fp.read()``.
+            To upload an avatar, a resource (see below) or a :term:`py:bytes-like object`
+            must be passed in that represents the image being uploaded.
 
-            The only image formats supported for uploading is JPEG and PNG.
+            The only image formats supported for uploading are JPG and PNG.
 
         .. versionchanged:: 2.0
             The edit is no longer in-place, instead the newly edited client user is returned.
+
+        .. versionchanged:: 2.6
+            Raises :exc:`ValueError` instead of ``InvalidArgument``.
 
         Parameters
         ----------
         username: :class:`str`
             The new username you wish to change to.
-        avatar: :class:`bytes`
-            A :term:`py:bytes-like object` representing the image to upload.
+        avatar: Optional[|resource_type|]
+            A :term:`py:bytes-like object` or asset representing the image to upload.
             Could be ``None`` to denote no avatar.
+
+            .. versionchanged:: 2.5
+                Now accepts various resource types in addition to :class:`bytes`.
 
         Raises
         ------
+        NotFound
+            The ``avatar`` asset couldn't be found.
         HTTPException
             Editing your profile failed.
-        InvalidArgument
+        TypeError
+            The ``avatar`` asset is a lottie sticker (see :func:`Sticker.read`).
+        ValueError
             Wrong image format passed for ``avatar``.
 
         Returns
@@ -391,7 +410,7 @@ class ClientUser(BaseUser):
             payload["username"] = username
 
         if avatar is not MISSING:
-            payload["avatar"] = _bytes_to_base64_data(avatar)
+            payload["avatar"] = await _assetbytes_to_base64_data(avatar)
 
         data: UserPayload = await self._state.http.edit_profile(payload)
         return ClientUser(state=self._state, data=data)
@@ -416,7 +435,7 @@ class User(BaseUser, disnake.abc.Messageable):
 
         .. describe:: str(x)
 
-            Returns the user's name with discriminator.
+            Returns the user's username (with discriminator, if not migrated to new system yet).
 
     Attributes
     ----------
@@ -425,36 +444,33 @@ class User(BaseUser, disnake.abc.Messageable):
     id: :class:`int`
         The user's unique ID.
     discriminator: :class:`str`
-        The user's discriminator. This is given when the username has conflicts.
+        The user's discriminator.
+
+        .. note::
+            This is being phased out by Discord; the username system is moving away from ``username#discriminator``
+            to users having a globally unique username.
+            The value of a single zero (``"0"``) indicates that the user has been migrated to the new system.
+            See the `help article <https://dis.gd/app-usernames>`__ for details.
+
+    global_name: Optional[:class:`str`]
+        The user's global display name, if set.
+        This takes precedence over :attr:`.name` when shown.
+
+        .. versionadded:: 2.9
+
     bot: :class:`bool`
         Specifies if the user is a bot account.
     system: :class:`bool`
         Specifies if the user is a system user (i.e. represents Discord officially).
     """
 
-    __slots__ = ("_stored",)
-
-    def __init__(
-        self, *, state: ConnectionState, data: Union[UserPayload, PartialUserPayload]
-    ) -> None:
-        super().__init__(state=state, data=data)
-        self._stored: bool = False
+    __slots__ = ("__weakref__",)
 
     def __repr__(self) -> str:
-        return f"<User id={self.id} name={self.name!r} discriminator={self.discriminator!r} bot={self.bot}>"
-
-    def __del__(self) -> None:
-        try:
-            if self._stored:
-                self._state.deref_user(self.id)
-        except Exception:
-            pass
-
-    @classmethod
-    def _copy(cls, user: User):
-        self = super()._copy(user)
-        self._stored = False
-        return self
+        return (
+            f"<User id={self.id} name={self.name!r} global_name={self.global_name!r}"
+            f" discriminator={self.discriminator!r} bot={self.bot}>"
+        )
 
     async def _get_channel(self) -> DMChannel:
         ch = await self.create_dm()

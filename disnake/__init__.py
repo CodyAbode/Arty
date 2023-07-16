@@ -1,5 +1,6 @@
-"""
-Discord API Wrapper
+# SPDX-License-Identifier: MIT
+
+"""Discord API Wrapper
 ~~~~~~~~~~~~~~~~~~~
 
 A basic wrapper for the Discord API.
@@ -13,19 +14,22 @@ __title__ = "disnake"
 __author__ = "Rapptz, EQUENOS"
 __license__ = "MIT"
 __copyright__ = "Copyright 2015-present Rapptz, 2021-present EQUENOS"
-__version__ = "2.4.0"
+__version__ = "2.9.0"
 
 __path__ = __import__("pkgutil").extend_path(__path__, __name__)
 
 import logging
 from typing import Literal, NamedTuple
 
-from . import abc, opus, ui, utils
+from . import abc as abc, opus as opus, ui as ui, utils as utils  # explicitly re-export modules
 from .activity import *
 from .app_commands import *
 from .appinfo import *
+from .application_role_connection import *
 from .asset import *
 from .audit_logs import *
+from .automod import *
+from .bans import *
 from .channel import *
 from .client import *
 from .colour import *
@@ -38,7 +42,9 @@ from .errors import *
 from .file import *
 from .flags import *
 from .guild import *
+from .guild_preview import *
 from .guild_scheduled_event import *
+from .i18n import *
 from .integrations import *
 from .interactions import *
 from .invite import *
@@ -46,6 +52,7 @@ from .member import *
 from .mentions import *
 from .message import *
 from .object import *
+from .onboarding import *
 from .partial_emoji import *
 from .permissions import *
 from .player import *
@@ -60,7 +67,9 @@ from .template import *
 from .threads import *
 from .user import *
 from .voice_client import *
+from .voice_region import *
 from .webhook import *
+from .welcome_screen import *
 from .widget import *
 
 
@@ -72,6 +81,6 @@ class VersionInfo(NamedTuple):
     serial: int
 
 
-version_info: VersionInfo = VersionInfo(major=2, minor=4, micro=0, releaselevel="final", serial=0)
+version_info: VersionInfo = VersionInfo(major=2, minor=9, micro=0, releaselevel="final", serial=0)
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())

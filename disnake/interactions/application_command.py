@@ -1,38 +1,16 @@
-# The MIT License (MIT)
-
-# Copyright (c) 2021-present EQUENOS
-
-# Permission is hereby granted, free of charge, to any person obtaining a
-# copy of this software and associated documentation files (the "Software"),
-# to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense,
-# and/or sell copies of the Software, and to permit persons to whom the
-# Software is furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple, TypeVar, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple, Union
 
 from .. import utils
-from ..channel import _threaded_channel_factory
-from ..enums import ApplicationCommandType, OptionType, try_enum
+from ..enums import ApplicationCommandType, Locale, OptionType, try_enum
 from ..guild import Guild
 from ..member import Member
-from ..message import Attachment, Message
-from ..role import Role
+from ..message import Message
 from ..user import User
-from .base import Interaction
+from .base import Interaction, InteractionDataResolved
 
 __all__ = (
     "ApplicationCommandInteraction",
@@ -55,36 +33,12 @@ __all__ = (
 MISSING = utils.MISSING
 
 if TYPE_CHECKING:
-    from ..channel import (
-        CategoryChannel,
-        PartialMessageable,
-        StageChannel,
-        StoreChannel,
-        TextChannel,
-        VoiceChannel,
-    )
     from ..ext.commands import InvokableApplicationCommand
     from ..state import ConnectionState
-    from ..threads import Thread
     from ..types.interactions import (
         ApplicationCommandInteraction as ApplicationCommandInteractionPayload,
         ApplicationCommandInteractionData as ApplicationCommandInteractionDataPayload,
-        ApplicationCommandInteractionDataResolved as ApplicationCommandInteractionDataResolvedPayload,
     )
-
-    InteractionChannel = Union[
-        VoiceChannel,
-        StageChannel,
-        TextChannel,
-        CategoryChannel,
-        StoreChannel,
-        Thread,
-        PartialMessageable,
-        VoiceChannel,
-    ]
-
-
-AppCmdDataOptionT = TypeVar("AppCmdDataOptionT", bound="ApplicationCommandInteractionDataOption")
 
 
 class ApplicationCommandInteraction(Interaction):
@@ -108,17 +62,23 @@ class ApplicationCommandInteraction(Interaction):
         The channel ID the interaction was sent from.
     author: Union[:class:`User`, :class:`Member`]
         The user or member that sent the interaction.
-    locale: :class:`str`
+    locale: :class:`Locale`
         The selected language of the interaction's author.
 
         .. versionadded:: 2.4
 
-    guild_locale: Optional[:class:`str`]
+        .. versionchanged:: 2.5
+            Changed to :class:`Locale` instead of :class:`str`.
+
+    guild_locale: Optional[:class:`Locale`]
         The selected language of the interaction's guild.
         This value is only meaningful in guilds with ``COMMUNITY`` feature and receives a default value otherwise.
         If the interaction was in a DM, then this value is ``None``.
 
         .. versionadded:: 2.4
+
+        .. versionchanged:: 2.5
+            Changed to :class:`Locale` instead of :class:`str`.
 
     token: :class:`str`
         The token to continue the interaction. These are valid for 15 minutes.
@@ -126,12 +86,18 @@ class ApplicationCommandInteraction(Interaction):
         The wrapped interaction data.
     client: :class:`Client`
         The interaction client.
+    application_command: :class:`.InvokableApplicationCommand`
+        The command invoked by the interaction.
+    command_failed: :class:`bool`
+        Whether the command failed to be checked or invoked.
     """
 
-    def __init__(self, *, data: ApplicationCommandInteractionPayload, state: ConnectionState):
+    def __init__(
+        self, *, data: ApplicationCommandInteractionPayload, state: ConnectionState
+    ) -> None:
         super().__init__(data=data, state=state)
-        self.data = ApplicationCommandInteractionData(
-            data=data["data"], state=state, guild=self.guild
+        self.data: ApplicationCommandInteractionData = ApplicationCommandInteractionData(
+            data=data["data"], state=state, guild_id=self.guild_id
         )
         self.application_command: InvokableApplicationCommand = MISSING
         self.command_failed: bool = False
@@ -154,19 +120,25 @@ class ApplicationCommandInteraction(Interaction):
 
 
 class GuildCommandInteraction(ApplicationCommandInteraction):
-    """An ApplicationCommandInteraction Context subclass meant for annotation.
+    """An :class:`ApplicationCommandInteraction` subclass, primarily meant for annotations.
 
-    No runtime behavior is changed but annotations are modified
-    to seem like the interaction can only ever be invoked in guilds.
+    This prevents the command from being invoked in DMs by automatically setting
+    :attr:`ApplicationCommand.dm_permission` to ``False`` for user/message commands and top-level slash commands.
+
+    Note that this does not apply to slash subcommands, subcommand groups, or autocomplete callbacks.
+
+    Additionally, annotations of some attributes are modified to match the expected types in guilds.
     """
 
+    author: Member
     guild: Guild
+    guild_id: int
+    guild_locale: Locale
     me: Member
-    guild_locale: str
 
 
 class UserCommandInteraction(ApplicationCommandInteraction):
-    """An ApplicationCommandInteraction Context subclass meant for annotation.
+    """An :class:`ApplicationCommandInteraction` subclass meant for annotations.
 
     No runtime behavior is changed but annotations are modified
     to seem like the interaction is specifically a user command.
@@ -176,7 +148,7 @@ class UserCommandInteraction(ApplicationCommandInteraction):
 
 
 class MessageCommandInteraction(ApplicationCommandInteraction):
-    """An ApplicationCommandInteraction Context subclass meant for annotation.
+    """An :class:`ApplicationCommandInteraction` subclass meant for annotations.
 
     No runtime behavior is changed but annotations are modified
     to seem like the interaction is specifically a message command.
@@ -185,7 +157,7 @@ class MessageCommandInteraction(ApplicationCommandInteraction):
     target: Message
 
 
-class ApplicationCommandInteractionData:
+class ApplicationCommandInteractionData(Dict[str, Any]):
     """Represents the data of an interaction with an application command.
 
     .. versionadded:: 2.1
@@ -198,7 +170,7 @@ class ApplicationCommandInteractionData:
         The application command name.
     type: :class:`ApplicationCommandType`
         The application command type.
-    resolved: :class:`ApplicationCommandInteractionDataResolved`
+    resolved: :class:`InteractionDataResolved`
         All resolved objects related to this interaction.
     options: List[:class:`ApplicationCommandInteractionDataOption`]
         A list of options from the API.
@@ -223,27 +195,35 @@ class ApplicationCommandInteractionData:
         *,
         data: ApplicationCommandInteractionDataPayload,
         state: ConnectionState,
-        guild: Optional[Guild],
-    ):
+        guild_id: Optional[int],
+    ) -> None:
+        super().__init__(data)
         self.id: int = int(data["id"])
         self.name: str = data["name"]
         self.type: ApplicationCommandType = try_enum(ApplicationCommandType, data["type"])
-        self.resolved = ApplicationCommandInteractionDataResolved(
-            data=data.get("resolved", {}), state=state, guild=guild
+
+        self.resolved = InteractionDataResolved(
+            data=data.get("resolved", {}), state=state, guild_id=guild_id
         )
         self.target_id: Optional[int] = utils._get_as_snowflake(data, "target_id")
-        self.target: Optional[Union[User, Member, Message]] = self.resolved.get(self.target_id)  # type: ignore
+        target = self.resolved.get_by_id(self.target_id)
+        self.target: Optional[Union[User, Member, Message]] = target  # type: ignore
+
         self.options: List[ApplicationCommandInteractionDataOption] = [
             ApplicationCommandInteractionDataOption(data=d, resolved=self.resolved)
             for d in data.get("options", [])
         ]
 
+    def __repr__(self) -> str:
+        return (
+            f"<ApplicationCommandInteractionData id={self.id!r} name={self.name!r} type={self.type!r} "
+            f"target_id={self.target_id!r} target={self.target!r} resolved={self.resolved!r} options={self.options!r}>"
+        )
+
     def _get_chain_and_kwargs(
-        self, chain: Tuple[str, ...] = None
+        self, chain: Optional[Tuple[str, ...]] = None
     ) -> Tuple[Tuple[str, ...], Dict[str, Any]]:
-        """
-        Returns a chain of sub-command names and a dict of filled options.
-        """
+        """Returns a chain of sub-command names and a dict of filled options."""
         if chain is None:
             chain = ()
         for option in self.options:
@@ -272,8 +252,8 @@ class ApplicationCommandInteractionData:
         return self._get_focused_option()  # type: ignore
 
 
-class ApplicationCommandInteractionDataOption:
-    """This class represents the structure of an interaction data option from the API.
+class ApplicationCommandInteractionDataOption(Dict[str, Any]):
+    """Represents the structure of an interaction data option from the API.
 
     Attributes
     ----------
@@ -292,21 +272,26 @@ class ApplicationCommandInteractionDataOption:
 
     __slots__ = ("name", "type", "value", "options", "focused")
 
-    def __init__(
-        self, *, data: Mapping[str, Any], resolved: ApplicationCommandInteractionDataResolved
-    ):
+    def __init__(self, *, data: Mapping[str, Any], resolved: InteractionDataResolved) -> None:
+        super().__init__(data)
         self.name: str = data["name"]
         self.type: OptionType = try_enum(OptionType, data["type"])
-        value = data.get("value")
-        if value is not None:
-            self.value: Any = resolved.get_with_type(value, self.type.value, value)
-        else:
-            self.value: Any = None
+
+        self.value: Any = None
+        if (value := data.get("value")) is not None:
+            self.value: Any = resolved.get_with_type(value, self.type, value)
+
         self.options: List[ApplicationCommandInteractionDataOption] = [
             ApplicationCommandInteractionDataOption(data=d, resolved=resolved)
             for d in data.get("options", [])
         ]
         self.focused: bool = data.get("focused", False)
+
+    def __repr__(self) -> str:
+        return (
+            f"<ApplicationCommandInteractionDataOption name={self.name!r} type={self.type!r}>"
+            f"value={self.value!r} focused={self.focused!r} options={self.options!r}>"
+        )
 
     def _simplified_value(self) -> Any:
         if self.value is not None:
@@ -322,7 +307,7 @@ class ApplicationCommandInteractionDataOption:
         return None
 
     def _get_chain_and_kwargs(
-        self, chain: Tuple[str, ...] = None
+        self, chain: Optional[Tuple[str, ...]] = None
     ) -> Tuple[Tuple[str, ...], Dict[str, Any]]:
         if chain is None:
             chain = ()
@@ -334,150 +319,8 @@ class ApplicationCommandInteractionDataOption:
         return chain, {}
 
 
-class ApplicationCommandInteractionDataResolved:
-    """Represents the resolved data related to an interaction with an application command.
-
-    .. versionadded:: 2.1
-
-    Attributes
-    ----------
-    members: Dict[:class:`int`, :class:`Member`]
-        A mapping of IDs to partial members (``deaf`` and ``mute`` attributes are missing).
-    users: Dict[:class:`int`, :class:`User`]
-        A mapping of IDs to users.
-    roles: Dict[:class:`int`, :class:`Role`]
-        A mapping of IDs to roles.
-    channels: Dict[:class:`int`, Channel]
-        A mapping of IDs to partial channels (only ``id``, ``name`` and ``permissions`` are included,
-        threads also have ``thread_metadata`` and ``parent_id``).
-    messages: Dict[:class:`int`, :class:`Message`]
-        A mapping of IDs to messages.
-    attachments: Dict[:class:`int`, :class:`Attachment`]
-        A mapping of IDs to attachments.
-
-        .. versionadded:: 2.4
-    """
-
-    __slots__ = ("members", "users", "roles", "channels", "messages", "attachments")
-
-    def __init__(
-        self,
-        *,
-        data: ApplicationCommandInteractionDataResolvedPayload,
-        state: ConnectionState,
-        guild: Optional[Guild],
-    ):
-        data = data or {}
-
-        self.members: Dict[int, Member] = {}
-        self.users: Dict[int, User] = {}
-        self.roles: Dict[int, Role] = {}
-        self.channels: Dict[int, InteractionChannel] = {}
-        self.messages: Dict[int, Message] = {}
-        self.attachments: Dict[int, Attachment] = {}
-
-        users = data.get("users", {})
-        members = data.get("members", {})
-        roles = data.get("roles", {})
-        channels = data.get("channels", {})
-        messages = data.get("messages", {})
-        attachments = data.get("attachments", {})
-
-        for str_id, user in users.items():
-            user_id = int(str_id)
-            member = members.get(str_id)
-            if member is not None:
-                self.members[user_id] = (
-                    guild
-                    and guild.get_member(user_id)
-                    or Member(
-                        data=member,
-                        user_data=user,
-                        guild=guild,  # type: ignore
-                        state=state,
-                    )
-                )
-            else:
-                self.users[user_id] = User(state=state, data=user)
-
-        for str_id, role in roles.items():
-            self.roles[int(str_id)] = Role(guild=guild, state=state, data=role)  # type: ignore
-
-        for str_id, channel in channels.items():
-            factory, ch_type = _threaded_channel_factory(channel["type"])
-            if factory:
-                channel["position"] = 0  # type: ignore
-                self.channels[int(str_id)] = (  # type: ignore
-                    guild
-                    and guild.get_channel(int(str_id))
-                    or factory(guild=guild, state=state, data=channel)  # type: ignore
-                )
-
-        for str_id, message in messages.items():
-            channel_id = int(message["channel_id"])
-            channel = guild.get_channel(channel_id) if guild else None
-            if channel is None:
-                channel = state.get_channel(channel_id)
-            self.messages[int(str_id)] = Message(state=state, channel=channel, data=message)  # type: ignore
-
-        for str_id, attachment in attachments.items():
-            self.attachments[int(str_id)] = Attachment(data=attachment, state=state)
-
-    def get_with_type(self, key: Any, option_type: OptionType, default: Any = None):
-        if isinstance(option_type, int):
-            option_type = try_enum(OptionType, option_type)
-        if option_type is OptionType.mentionable:
-            key = int(key)
-            result = self.members.get(key)
-            if result is not None:
-                return result
-            result = self.users.get(key)
-            if result is not None:
-                return result
-            return self.roles.get(key, default)
-
-        if option_type is OptionType.user:
-            key = int(key)
-            member = self.members.get(key)
-            if member is not None:
-                return member
-            return self.users.get(key, default)
-
-        if option_type is OptionType.channel:
-            return self.channels.get(int(key), default)
-
-        if option_type is OptionType.role:
-            return self.roles.get(int(key), default)
-
-        if option_type is OptionType.attachment:
-            return self.attachments.get(int(key), default)
-
-        return default
-
-    def get(self, key: int):
-        if key is None:
-            return None
-
-        res = self.members.get(key)
-        if res is not None:
-            return res
-        res = self.users.get(key)
-        if res is not None:
-            return res
-        res = self.roles.get(key)
-        if res is not None:
-            return res
-        res = self.channels.get(key)
-        if res is not None:
-            return res
-        res = self.messages.get(key)
-        if res is not None:
-            return res
-        res = self.attachments.get(key)
-        if res is not None:
-            return res
-
-        return None
+# backwards compatibility
+ApplicationCommandInteractionDataResolved = InteractionDataResolved
 
 
 # People asked about shorter aliases, let's see which one catches on the most

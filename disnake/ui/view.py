@@ -1,27 +1,4 @@
-"""
-The MIT License (MIT)
-
-Copyright (c) 2015-2021 Rapptz
-Copyright (c) 2021-present Disnake Development
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the "Software"),
-to deal in the Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the
-Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-"""
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
@@ -34,7 +11,6 @@ from functools import partial
 from itertools import groupby
 from typing import (
     TYPE_CHECKING,
-    Any,
     Callable,
     ClassVar,
     Dict,
@@ -43,60 +19,82 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
-    cast,
 )
 
 from ..components import (
     ActionRow as ActionRowComponent,
     Button as ButtonComponent,
-    Component,
-    NestedComponent,
-    SelectMenu as SelectComponent,
+    ChannelSelectMenu as ChannelSelectComponent,
+    MentionableSelectMenu as MentionableSelectComponent,
+    MessageComponent,
+    RoleSelectMenu as RoleSelectComponent,
+    StringSelectMenu as StringSelectComponent,
+    UserSelectMenu as UserSelectComponent,
     _component_factory,
 )
 from ..enums import ComponentType, try_enum_to_int
+from ..utils import assert_never
 from .item import Item
 
 __all__ = ("View",)
 
 
 if TYPE_CHECKING:
+    from typing_extensions import Self
+
     from ..interactions import MessageInteraction
     from ..message import Message
     from ..state import ConnectionState
-    from ..types.components import Component as ComponentPayload
+    from ..types.components import ActionRow as ActionRowPayload, Component as ComponentPayload
     from .item import ItemCallbackType
 
 
-def _walk_all_components(components: List[Component]) -> Iterator[NestedComponent]:
+def _walk_all_components(
+    components: List[ActionRowComponent[MessageComponent]],
+) -> Iterator[MessageComponent]:
     for item in components:
-        if isinstance(item, ActionRowComponent):
-            yield from item.children
-        else:
-            yield cast(NestedComponent, item)
+        yield from item.children
 
 
-def _component_to_item(component: NestedComponent) -> Item:
+def _component_to_item(component: MessageComponent) -> Item:
     if isinstance(component, ButtonComponent):
         from .button import Button
 
         return Button.from_component(component)
-    if isinstance(component, SelectComponent):
-        from .select import Select
+    if isinstance(component, StringSelectComponent):
+        from .select import StringSelect
 
-        return Select.from_component(component)
+        return StringSelect.from_component(component)
+    if isinstance(component, UserSelectComponent):
+        from .select import UserSelect
+
+        return UserSelect.from_component(component)
+    if isinstance(component, RoleSelectComponent):
+        from .select import RoleSelect
+
+        return RoleSelect.from_component(component)
+    if isinstance(component, MentionableSelectComponent):
+        from .select import MentionableSelect
+
+        return MentionableSelect.from_component(component)
+    if isinstance(component, ChannelSelectComponent):
+        from .select import ChannelSelect
+
+        return ChannelSelect.from_component(component)
+
+    assert_never(component)
     return Item.from_component(component)
 
 
 class _ViewWeights:
     __slots__ = ("weights",)
 
-    def __init__(self, children: List[Item]):
+    def __init__(self, children: List[Item]) -> None:
         self.weights: List[int] = [0, 0, 0, 0, 0]
 
-        key = lambda i: sys.maxsize if i.row is None else i.row
+        key: Callable[[Item[View]], int] = lambda i: sys.maxsize if i.row is None else i.row
         children = sorted(children, key=key)
-        for row, group in groupby(children, key=key):
+        for _, group in groupby(children, key=key):
             for item in group:
                 self.add_item(item)
 
@@ -133,6 +131,10 @@ class View:
 
     This object must be inherited to create a UI within Discord.
 
+    Alternatively, components can be handled with :class:`disnake.ui.ActionRow`\\s and event
+    listeners for a more low-level approach. Relevant events are :func:`disnake.on_button_click`,
+    :func:`disnake.on_dropdown`, and the more generic :func:`disnake.on_message_interaction`.
+
     .. versionadded:: 2.0
 
     Parameters
@@ -151,10 +153,10 @@ class View:
     """
 
     __discord_ui_view__: ClassVar[bool] = True
-    __view_children_items__: ClassVar[List[ItemCallbackType]] = []
+    __view_children_items__: ClassVar[List[ItemCallbackType[Item]]] = []
 
     def __init_subclass__(cls) -> None:
-        children: List[ItemCallbackType] = []
+        children: List[ItemCallbackType[Item]] = []
         for base in reversed(cls.__mro__):
             for member in base.__dict__.values():
                 if hasattr(member, "__discord_ui_model_type__"):
@@ -165,7 +167,7 @@ class View:
 
         cls.__view_children_items__ = children
 
-    def __init__(self, *, timeout: Optional[float] = 180.0):
+    def __init__(self, *, timeout: Optional[float] = 180.0) -> None:
         self.timeout = timeout
         self.children: List[Item] = []
         for func in self.__view_children_items__:
@@ -203,12 +205,12 @@ class View:
             # Wait N seconds to see if timeout data has been refreshed
             await asyncio.sleep(self.__timeout_expiry - now)
 
-    def to_components(self) -> List[Dict[str, Any]]:
+    def to_components(self) -> List[ActionRowPayload]:
         def key(item: Item) -> int:
             return item._rendered_row or 0
 
         children = sorted(self.children, key=key)
-        components: List[Dict[str, Any]] = []
+        components: List[ActionRowPayload] = []
         for _, group in groupby(children, key=key):
             children = [item.to_component_dict() for item in group]
             if not children:
@@ -256,8 +258,11 @@ class View:
             return time.monotonic() + self.timeout
         return None
 
-    def add_item(self, item: Item) -> None:
+    def add_item(self, item: Item) -> Self:
         """Adds an item to the view.
+
+        This function returns the class instance to allow for fluent-style
+        chaining.
 
         Parameters
         ----------
@@ -282,9 +287,13 @@ class View:
 
         item._view = self
         self.children.append(item)
+        return self
 
-    def remove_item(self, item: Item) -> None:
+    def remove_item(self, item: Item) -> Self:
         """Removes an item from the view.
+
+        This function returns the class instance to allow for fluent-style
+        chaining.
 
         Parameters
         ----------
@@ -297,11 +306,17 @@ class View:
             pass
         else:
             self.__weights.remove_item(item)
+        return self
 
-    def clear_items(self) -> None:
-        """Removes all items from the view."""
+    def clear_items(self) -> Self:
+        """Removes all items from the view.
+
+        This function returns the class instance to allow for fluent-style
+        chaining.
+        """
         self.children.clear()
         self.__weights.clear()
+        return self
 
     async def interaction_check(self, interaction: MessageInteraction) -> bool:
         """|coro|
@@ -381,14 +396,14 @@ class View:
             self.__timeout_expiry = time.monotonic() + self.timeout
             self.__timeout_task = loop.create_task(self.__timeout_task_impl())
 
-    def _dispatch_timeout(self):
+    def _dispatch_timeout(self) -> None:
         if self.__stopped.done():
             return
 
         self.__stopped.set_result(True)
         asyncio.create_task(self.on_timeout(), name=f"disnake-ui-view-timeout-{self.id}")
 
-    def _dispatch_item(self, item: Item, interaction: MessageInteraction):
+    def _dispatch_item(self, item: Item, interaction: MessageInteraction) -> None:
         if self.__stopped.done():
             return
 
@@ -396,7 +411,7 @@ class View:
             self._scheduled_task(item, interaction), name=f"disnake-ui-view-dispatch-{self.id}"
         )
 
-    def refresh(self, components: List[Component]):
+    def refresh(self, components: List[ActionRowComponent[MessageComponent]]) -> None:
         # TODO: this is pretty hacky at the moment
         old_state: Dict[Tuple[int, str], Item] = {
             (item.type.value, item.custom_id): item  # type: ignore
@@ -485,7 +500,7 @@ class View:
 
 
 class ViewStore:
-    def __init__(self, state: ConnectionState):
+    def __init__(self, state: ConnectionState) -> None:
         # (component_type, message_id, custom_id): (View, Item)
         self._views: Dict[Tuple[int, Optional[int], str], Tuple[View, Item]] = {}
         # message_id: View
@@ -494,25 +509,19 @@ class ViewStore:
 
     @property
     def persistent_views(self) -> Sequence[View]:
-        # fmt: off
-        views = {
-            view.id: view
-            for (_, (view, _)) in self._views.items()
-            if view.is_persistent()
-        }
-        # fmt: on
+        views = {view.id: view for view, _ in self._views.values() if view.is_persistent()}
         return list(views.values())
 
-    def __verify_integrity(self):
+    def __verify_integrity(self) -> None:
         to_remove: List[Tuple[int, Optional[int], str]] = []
-        for (k, (view, _)) in self._views.items():
+        for k, (view, _) in self._views.items():
             if view.is_finished():
                 to_remove.append(k)
 
         for k in to_remove:
             del self._views[k]
 
-    def add_view(self, view: View, message_id: Optional[int] = None):
+    def add_view(self, view: View, message_id: Optional[int] = None) -> None:
         self.__verify_integrity()
 
         view._start_listening_from_store(self)
@@ -523,7 +532,7 @@ class ViewStore:
         if message_id is not None:
             self._synced_message_views[message_id] = view
 
-    def remove_view(self, view: View):
+    def remove_view(self, view: View) -> None:
         for item in view.children:
             if item.is_dispatchable():
                 self._views.pop((item.type.value, item.custom_id), None)  # type: ignore
@@ -533,7 +542,7 @@ class ViewStore:
                 del self._synced_message_views[key]
                 break
 
-    def dispatch(self, interaction: MessageInteraction):
+    def dispatch(self, interaction: MessageInteraction) -> None:
         self.__verify_integrity()
         message_id: Optional[int] = interaction.message and interaction.message.id
         component_type = try_enum_to_int(interaction.data.component_type)
@@ -549,13 +558,15 @@ class ViewStore:
         item.refresh_state(interaction)
         view._dispatch_item(item, interaction)
 
-    def is_message_tracked(self, message_id: int):
+    def is_message_tracked(self, message_id: int) -> bool:
         return message_id in self._synced_message_views
 
     def remove_message_tracking(self, message_id: int) -> Optional[View]:
         return self._synced_message_views.pop(message_id, None)
 
-    def update_from_message(self, message_id: int, components: List[ComponentPayload]):
+    def update_from_message(self, message_id: int, components: List[ComponentPayload]) -> None:
         # pre-req: is_message_tracked == true
         view = self._synced_message_views[message_id]
-        view.refresh([_component_factory(d) for d in components])
+        view.refresh(
+            [_component_factory(d, type=ActionRowComponent[MessageComponent]) for d in components]
+        )

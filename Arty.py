@@ -27,13 +27,15 @@ user_data_file = 'user_data.json'
 store_data_file = 'store_data.json'
 media_directory = 'media'
 main_color = disnake.Color.from_rgb(14, 0, 89)
+bot_version = '3.0.0'
+moderator = disnake.Permissions(moderate_members=True)
 
 if os.path.exists(secrets_file):
         with open(secrets_file) as file:
             secrets = json.load(file)
         bot_token = secrets['bot_token']
         guild_id = secrets['guild_id']
-        mod_role_id = secrets['mod_role_id']
+        # mod_role_id = secrets['mod_role_id']
         general_chanel = secrets['general_chanel']
 else:
     error_msg = f'Could not find {secrets_file}'
@@ -81,30 +83,28 @@ def hex_to_rgb(hex):
     return tuple(int(hex.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
 
 intents = disnake.Intents.default()
+intents.presences = False
 intents.members = True
-#intents.message_content = True
+intents.message_content = True
 
 bot = commands.Bot(
     command_prefix=commands.when_mentioned,
     test_guilds=[guild_id],
     sync_commands_debug=True,
-    sync_permissions=True,
     intents=intents
     )
 
 @bot.event
 async def on_ready():
-    logger.info(f'Ready! Logged in as {bot.user} (ID: {bot.user.id})')
+    logger.info(f'Ready! Bot version {bot_version}. Logged in as {bot.user} (ID: {bot.user.id})')
 
-@bot.slash_command(default_permission=False)
-@commands.guild_permissions(guild_id, roles={mod_role_id: True})
+@bot.slash_command(default_member_permissions=moderator)
 async def ping(inter):
     """Check bot availability and latency."""
     logger.info(f'{inter.author} used ping()')
     await inter.response.send_message(f'Pong! ({inter.client.latency*1000}ms)')
 
-@bot.slash_command(default_permission=False)
-@commands.guild_permissions(guild_id, roles={mod_role_id: True})
+@bot.slash_command(default_member_permissions=moderator)
 async def message(inter, channel: disnake.TextChannel, message: str):
     """
     Send a message in a specified channel.
@@ -118,8 +118,7 @@ async def message(inter, channel: disnake.TextChannel, message: str):
     await channel.send(message)
     await inter.response.send_message(f'Message sent to <#{channel.id}>.')
 
-@bot.slash_command(default_permission=False)
-@commands.guild_permissions(guild_id, roles={mod_role_id: True})
+@bot.slash_command(default_member_permissions=moderator)
 async def dispense(inter, amount: int, user: disnake.User):
     """
     Give tickets to a user.

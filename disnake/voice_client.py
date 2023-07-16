@@ -1,29 +1,6 @@
-"""
-The MIT License (MIT)
+# SPDX-License-Identifier: MIT
 
-Copyright (c) 2015-2021 Rapptz
-Copyright (c) 2021-present Disnake Development
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the "Software"),
-to deal in the Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the
-Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-
-
-Some documentation to refer to:
+"""Some documentation to refer to:
 
 - Our main web socket (mWS) sends opcode 4 with a guild ID and channel ID.
 - The mWS receives VOICE_STATE_UPDATE and VOICE_SERVER_UPDATE.
@@ -37,7 +14,6 @@ Some documentation to refer to:
 - When that's all done, we receive opcode 4 from the vWS.
 - Finally we can transmit data to endpoint:port.
 """
-
 from __future__ import annotations
 
 import asyncio
@@ -50,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Callable, List, Optional, Tuple
 from . import opus, utils
 from .backoff import ExponentialBackoff
 from .errors import ClientException, ConnectionClosed
-from .gateway import *
+from .gateway import DiscordVoiceWebSocket
 from .player import AudioPlayer, AudioSource
 from .utils import MISSING
 
@@ -60,18 +36,16 @@ if TYPE_CHECKING:
     from .guild import Guild
     from .opus import Encoder
     from .state import ConnectionState
-    from .types.voice import (
-        GuildVoiceState as GuildVoiceStatePayload,
-        SupportedModes,
-        VoiceServerUpdate as VoiceServerUpdatePayload,
-    )
+    from .types.gateway import VoiceServerUpdateEvent
+    from .types.voice import GuildVoiceState as GuildVoiceStatePayload, SupportedModes
     from .user import ClientUser
 
 
 has_nacl: bool
 
 try:
-    import nacl.secret  # type: ignore
+    import nacl.secret
+    import nacl.utils
 
     has_nacl = True
 except ImportError:
@@ -120,15 +94,11 @@ class VoiceProtocol:
         Parameters
         ----------
         data: :class:`dict`
-            The raw `voice state payload`__.
-
-            .. _voice_state_update_payload: https://discord.com/developers/docs/resources/voice#voice-state-object
-
-            __ voice_state_update_payload_
+            The raw :ddocs:`voice state payload <resources/voice#voice-state-object>`.
         """
         raise NotImplementedError
 
-    async def on_voice_server_update(self, data: VoiceServerUpdatePayload) -> None:
+    async def on_voice_server_update(self, data: VoiceServerUpdateEvent) -> None:
         """|coro|
 
         An abstract method that is called when initially connecting to voice.
@@ -137,11 +107,7 @@ class VoiceProtocol:
         Parameters
         ----------
         data: :class:`dict`
-            The raw `voice server update payload`__.
-
-            .. _voice_server_update_payload: https://discord.com/developers/docs/topics/gateway#voice-server-update-voice-server-update-event-fields
-
-            __ voice_server_update_payload_
+            The raw :ddocs:`voice server update payload <topics/gateway-events#voice-server-update>`.
         """
         raise NotImplementedError
 
@@ -183,7 +149,9 @@ class VoiceProtocol:
         raise NotImplementedError
 
     def cleanup(self) -> None:
-        """This method *must* be called to ensure proper clean-up during a disconnect.
+        """Cleans up the internal state.
+
+        **This method *must* be called to ensure proper clean-up during a disconnect.**
 
         It is advisable to call this from within :meth:`disconnect` when you are
         completely done with the voice protocol instance.
@@ -203,7 +171,7 @@ class VoiceClient(VoiceProtocol):
     e.g. :meth:`VoiceChannel.connect`.
 
     Warning
-    --------
+    -------
     In order to use PCM based AudioSources, you must have the opus library
     installed on your system and loaded through :func:`opus.load_opus`.
     Otherwise, your AudioSources must be opus encoded (e.g. using :class:`FFmpegOpusAudio`)
@@ -230,14 +198,14 @@ class VoiceClient(VoiceProtocol):
     ip: str
     port: int
 
-    def __init__(self, client: Client, channel: abc.Connectable):
+    def __init__(self, client: Client, channel: abc.Connectable) -> None:
         if not has_nacl:
             raise RuntimeError("PyNaCl library needed in order to use voice")
 
         super().__init__(client, channel)
         state = client._connection
         self.token: str = MISSING
-        self.socket = MISSING
+        self.socket: socket.socket = MISSING
         self.loop: asyncio.AbstractEventLoop = state.loop
         self._state: ConnectionState = state
         # this will be used in the AudioPlayer thread
@@ -267,16 +235,16 @@ class VoiceClient(VoiceProtocol):
     )
 
     @property
-    def guild(self) -> Optional[Guild]:
-        """Optional[:class:`Guild`]: The guild we're connected to, if applicable."""
-        return getattr(self.channel, "guild", None)
+    def guild(self) -> Guild:
+        """:class:`Guild`: The guild we're connected to."""
+        return self.channel.guild
 
     @property
     def user(self) -> ClientUser:
         """:class:`ClientUser`: The user connected to voice (i.e. ourselves)."""
         return self._state.user
 
-    def checked_add(self, attr, value, limit):
+    def checked_add(self, attr: str, value: int, limit: int) -> None:
         val = getattr(self, attr)
         if val + value > limit:
             setattr(self, attr, 0)
@@ -302,12 +270,12 @@ class VoiceClient(VoiceProtocol):
         else:
             self._voice_state_complete.set()
 
-    async def on_voice_server_update(self, data: VoiceServerUpdatePayload) -> None:
+    async def on_voice_server_update(self, data: VoiceServerUpdateEvent) -> None:
         if self._voice_server_complete.is_set():
             _log.info("Ignoring extraneous voice server update.")
             return
 
-        self.token = data.get("token")
+        self.token = data["token"]
         self.server_id = int(data["guild_id"])
         endpoint = data.get("endpoint")
 
@@ -326,12 +294,15 @@ class VoiceClient(VoiceProtocol):
         # This gets set later
         self.endpoint_ip = MISSING
 
+        if self.socket:
+            self.socket.close()
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.setblocking(False)
 
         if not self._handshaking:
             # If we're not handshaking then we need to terminate our previous connection in the websocket
-            await self.ws.close(4000)
+            if self.ws:
+                await self.ws.close(4000)
             return
 
         self._voice_server_complete.set()
@@ -456,6 +427,11 @@ class VoiceClient(VoiceProtocol):
             try:
                 await self.ws.poll_event()
             except (ConnectionClosed, asyncio.TimeoutError) as exc:
+                # Ensure the keep alive handler is closed
+                if self.ws._keep_alive:
+                    self.ws._keep_alive.stop()
+                    self.ws._keep_alive = None
+
                 if isinstance(exc, ConnectionClosed):
                     # The following close codes are undocumented so I will document them here.
                     # 1000 - normal closure (obviously)
@@ -542,7 +518,7 @@ class VoiceClient(VoiceProtocol):
         struct.pack_into(">I", header, 4, self.timestamp)
         struct.pack_into(">I", header, 8, self.ssrc)
 
-        encrypt_packet = getattr(self, "_encrypt_" + self.mode)
+        encrypt_packet = getattr(self, f"_encrypt_{self.mode}")
         return encrypt_packet(header, data)
 
     def _encrypt_xsalsa20_poly1305(self, header: bytes, data) -> bytes:
@@ -568,7 +544,7 @@ class VoiceClient(VoiceProtocol):
         return header + box.encrypt(bytes(data), bytes(nonce)).ciphertext + nonce[:4]
 
     def play(
-        self, source: AudioSource, *, after: Callable[[Optional[Exception]], Any] = None
+        self, source: AudioSource, *, after: Optional[Callable[[Optional[Exception]], Any]] = None
     ) -> None:
         """Plays an :class:`AudioSource`.
 
@@ -597,7 +573,6 @@ class VoiceClient(VoiceProtocol):
         OpusNotLoaded
             Source is not opus encoded and opus is not loaded.
         """
-
         if not self.is_connected():
             raise ClientException("Not connected to voice.")
 
@@ -674,7 +649,6 @@ class VoiceClient(VoiceProtocol):
         opus.OpusError
             Encoding the data failed.
         """
-
         self.checked_add("sequence", 1, 65535)
         if encode:
             encoded_data = self.encoder.encode(data, self.encoder.SAMPLES_PER_FRAME)

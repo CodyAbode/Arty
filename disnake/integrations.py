@@ -1,41 +1,18 @@
-"""
-The MIT License (MIT)
-
-Copyright (c) 2015-2021 Rapptz
-Copyright (c) 2021-present Disnake Development
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the "Software"),
-to deal in the Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the
-Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-"""
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
 import datetime
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Type
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Type
 
 from .enums import ExpireBehaviour, try_enum
-from .errors import InvalidArgument
 from .user import User
-from .utils import MISSING, _get_as_snowflake, parse_time
+from .utils import MISSING, _get_as_snowflake, deprecated, parse_time, warn_deprecated
 
 __all__ = (
     "IntegrationAccount",
     "IntegrationApplication",
+    "PartialIntegration",
     "Integration",
     "StreamIntegration",
     "BotIntegration",
@@ -50,6 +27,7 @@ if TYPE_CHECKING:
         IntegrationAccount as IntegrationAccountPayload,
         IntegrationApplication as IntegrationApplicationPayload,
         IntegrationType,
+        PartialIntegration as PartialIntegrationPayload,
         StreamIntegration as StreamIntegrationPayload,
     )
 
@@ -77,7 +55,52 @@ class IntegrationAccount:
         return f"<IntegrationAccount id={self.id} name={self.name!r}>"
 
 
-class Integration:
+class PartialIntegration:
+    """Represents a partial guild integration.
+
+    .. versionadded:: 2.6
+
+    Attributes
+    ----------
+    id: :class:`int`
+        The integration ID.
+    name: :class:`str`
+        The integration name.
+    guild: :class:`Guild`
+        The guild of the integration.
+    type: :class:`str`
+        The integration type (i.e. ``twitch``).
+    account: :class:`IntegrationAccount`
+        The account linked to this integration.
+    application_id: Optional[:class:`int`]
+        The ID of the application tied to this integration.
+    """
+
+    __slots__ = (
+        "guild",
+        "id",
+        "name",
+        "type",
+        "account",
+        "application_id",
+    )
+
+    def __init__(self, *, data: PartialIntegrationPayload, guild: Guild) -> None:
+        self.guild = guild
+        self._from_data(data)
+
+    def __repr__(self) -> str:
+        return f"<{self.__class__.__name__} id={self.id} name={self.name!r}>"
+
+    def _from_data(self, data: PartialIntegrationPayload) -> None:
+        self.id: int = int(data["id"])
+        self.type: IntegrationType = data["type"]
+        self.name: str = data["name"]
+        self.account: IntegrationAccount = IntegrationAccount(data["account"])
+        self.application_id: Optional[int] = _get_as_snowflake(data, "application_id")
+
+
+class Integration(PartialIntegration):
     """Represents a guild integration.
 
     .. versionadded:: 1.4
@@ -96,41 +119,31 @@ class Integration:
         Whether the integration is currently enabled.
     account: :class:`IntegrationAccount`
         The account linked to this integration.
-    user: :class:`User`
+    user: Optional[:class:`User`]
         The user that added this integration.
     """
 
     __slots__ = (
-        "guild",
-        "id",
         "_state",
-        "type",
-        "name",
-        "account",
         "user",
         "enabled",
     )
 
-    def __init__(self, *, data: IntegrationPayload, guild: Guild) -> None:
-        self.guild = guild
-        self._state = guild._state
-        self._from_data(data)
-
-    def __repr__(self):
-        return f"<{self.__class__.__name__} id={self.id} name={self.name!r}>"
-
     def _from_data(self, data: IntegrationPayload) -> None:
-        self.id: int = int(data["id"])
-        self.type: IntegrationType = data["type"]
-        self.name: str = data["name"]
-        self.account: IntegrationAccount = IntegrationAccount(data["account"])
+        super()._from_data(data)
+        self._state = self.guild._state
 
         user = data.get("user")
         self.user = User(state=self._state, data=user) if user else None
         self.enabled: bool = data["enabled"]
 
+    @deprecated("Guild.leave")
     async def delete(self, *, reason: Optional[str] = None) -> None:
         """|coro|
+
+        .. deprecated:: 2.5
+            Can only be used on the application's own integration and is therefore
+            equivalent to leaving the guild.
 
         Deletes the integration.
 
@@ -139,7 +152,7 @@ class Integration:
 
         Parameters
         ----------
-        reason: :class:`str`
+        reason: Optional[:class:`str`]
             The reason the integration was deleted. Shows up on the audit log.
 
             .. versionadded:: 2.0
@@ -219,6 +232,7 @@ class StreamIntegration(Integration):
         """Optional[:class:`Role`] The role which the integration uses for subscribers."""
         return self.guild.get_role(self._role_id)  # type: ignore
 
+    @deprecated()
     async def edit(
         self,
         *,
@@ -228,10 +242,16 @@ class StreamIntegration(Integration):
     ) -> None:
         """|coro|
 
+        .. deprecated:: 2.5
+            No longer supported, bots cannot use this endpoint anymore.
+
         Edits the integration.
 
         You must have :attr:`~Permissions.manage_guild` permission to
         use this.
+
+        .. versionchanged:: 2.6
+            Raises :exc:`TypeError` instead of ``InvalidArgument``.
 
         Parameters
         ----------
@@ -248,13 +268,13 @@ class StreamIntegration(Integration):
             You do not have permission to edit the integration.
         HTTPException
             Editing the guild failed.
-        InvalidArgument
+        TypeError
             ``expire_behaviour`` did not receive a :class:`ExpireBehaviour`.
         """
         payload: Dict[str, Any] = {}
         if expire_behaviour is not MISSING:
             if not isinstance(expire_behaviour, ExpireBehaviour):
-                raise InvalidArgument("expire_behaviour field must be of type ExpireBehaviour")
+                raise TypeError("expire_behaviour field must be of type ExpireBehaviour")
 
             payload["expire_behavior"] = expire_behaviour.value
 
@@ -268,8 +288,12 @@ class StreamIntegration(Integration):
         # Unsure if it returns the data or not as a result
         await self._state.http.edit_integration(self.guild.id, self.id, **payload)
 
+    @deprecated()
     async def sync(self) -> None:
         """|coro|
+
+        .. deprecated:: 2.5
+            No longer supported, bots cannot use this endpoint anymore.
 
         Syncs the integration.
 
@@ -302,8 +326,6 @@ class IntegrationApplication:
         The application's icon hash.
     description: :class:`str`
         The application's description. Can be an empty string.
-    summary: :class:`str`
-        The application's summary. Can be an empty string.
     user: Optional[:class:`User`]
         The bot user associated with this application.
     """
@@ -313,22 +335,36 @@ class IntegrationApplication:
         "name",
         "icon",
         "description",
-        "summary",
+        "_summary",
         "user",
     )
 
-    def __init__(self, *, data: IntegrationApplicationPayload, state):
+    def __init__(self, *, data: IntegrationApplicationPayload, state) -> None:
         self.id: int = int(data["id"])
         self.name: str = data["name"]
         self.icon: Optional[str] = data["icon"]
         self.description: str = data["description"]
-        self.summary: str = data["summary"]
+        self._summary: str = data.get("summary", "")
         user = data.get("bot")
         self.user: Optional[User] = User(state=state, data=user) if user else None
 
+    @property
+    def summary(self) -> str:
+        """:class:`str`: The application's summary. Can be an empty string.
+
+        .. deprecated:: 2.5
+
+            This field is deprecated by discord and is now always blank. Consider using :attr:`.description` instead.
+        """
+        warn_deprecated(
+            "summary is deprecated and will be removed in a future version. Consider using description instead.",
+            stacklevel=2,
+        )
+        return self._summary
+
 
 class BotIntegration(Integration):
-    """Represents a bot integration on disnake.
+    """Represents a bot integration on Discord.
 
     .. versionadded:: 2.0
 
@@ -350,13 +386,26 @@ class BotIntegration(Integration):
         The integration account information.
     application: :class:`IntegrationApplication`
         The application tied to this integration.
+    scopes: List[:class:`str`]
+        The OAuth2 scopes the application has been authorized for.
+
+        .. versionadded:: 2.6
     """
 
-    __slots__ = ("application",)
+    __slots__ = ("application", "scopes")
 
     def _from_data(self, data: BotIntegrationPayload) -> None:
         super()._from_data(data)
-        self.application = IntegrationApplication(data=data["application"], state=self._state)
+        self.application: IntegrationApplication = IntegrationApplication(
+            data=data["application"], state=self._state
+        )
+        self.scopes: List[str] = data.get("scopes") or []
+
+    def __repr__(self) -> str:
+        return (
+            f"<{self.__class__.__name__} id={self.id}"
+            f" name={self.name!r} scopes={self.scopes!r}>"
+        )
 
 
 def _integration_factory(value: str) -> Tuple[Type[Integration], str]:

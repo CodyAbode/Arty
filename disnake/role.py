@@ -1,39 +1,15 @@
-"""
-The MIT License (MIT)
-
-Copyright (c) 2015-2021 Rapptz
-Copyright (c) 2021-present Disnake Development
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the "Software"),
-to deal in the Software without restriction, including without limitation
-the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the
-Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-"""
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, TypeVar, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from .asset import Asset
 from .colour import Colour
-from .errors import InvalidArgument
 from .mixins import Hashable
 from .partial_emoji import PartialEmoji
 from .permissions import Permissions
-from .utils import MISSING, _bytes_to_base64_data, _get_as_snowflake, snowflake_time
+from .utils import MISSING, _assetbytes_to_base64_data, _get_as_snowflake, snowflake_time
 
 __all__ = (
     "RoleTags",
@@ -43,6 +19,9 @@ __all__ = (
 if TYPE_CHECKING:
     import datetime
 
+    from typing_extensions import Self
+
+    from .asset import AssetBytes
     from .guild import Guild
     from .member import Member
     from .state import ConnectionState
@@ -67,22 +46,37 @@ class RoleTags:
         The bot's user ID that manages this role.
     integration_id: Optional[:class:`int`]
         The integration ID that manages the role.
+
+        Roles with this ID matching the guild's ``guild_subscription`` integration
+        are considered subscription roles.
+    subscription_listing_id: Optional[:class:`int`]
+        The ID of this role's subscription listing, if applicable.
+
+        .. versionadded:: 2.9
     """
 
     __slots__ = (
         "bot_id",
         "integration_id",
+        "subscription_listing_id",
         "_premium_subscriber",
+        "_guild_connections",
+        "_available_for_purchase",
     )
 
-    def __init__(self, data: RoleTagPayload):
+    def __init__(self, data: RoleTagPayload) -> None:
         self.bot_id: Optional[int] = _get_as_snowflake(data, "bot_id")
         self.integration_id: Optional[int] = _get_as_snowflake(data, "integration_id")
-        # NOTE: The API returns "null" for this if it's valid, which corresponds to None.
+        self.subscription_listing_id: Optional[int] = _get_as_snowflake(
+            data, "subscription_listing_id"
+        )
+
+        # NOTE: A value of null/None for this corresponds to True.
+        # If a field is missing, it corresponds to False.
         # This is different from other fields where "null" means "not there".
-        # So in this case, a value of None is the same as True.
-        # Which means we would need a different sentinel.
         self._premium_subscriber: Optional[Any] = data.get("premium_subscriber", MISSING)
+        self._guild_connections: Optional[Any] = data.get("guild_connections", MISSING)
+        self._available_for_purchase: Optional[Any] = data.get("available_for_purchase", MISSING)
 
     def is_bot_managed(self) -> bool:
         """Whether the role is associated with a bot.
@@ -91,13 +85,6 @@ class RoleTags:
         """
         return self.bot_id is not None
 
-    def is_premium_subscriber(self) -> bool:
-        """Whether the role is the premium subscriber, AKA "boost", role for the guild.
-
-        :return type: :class:`bool`
-        """
-        return self._premium_subscriber is None
-
     def is_integration(self) -> bool:
         """Whether the role is managed by an integration.
 
@@ -105,14 +92,48 @@ class RoleTags:
         """
         return self.integration_id is not None
 
+    def is_premium_subscriber(self) -> bool:
+        """Whether the role is the premium subscriber, AKA "boost", role for the guild.
+
+        :return type: :class:`bool`
+        """
+        return self._premium_subscriber is None
+
+    def is_linked_role(self) -> bool:
+        """Whether the role is a linked role for the guild.
+
+        .. versionadded:: 2.8
+
+        :return type: :class:`bool`
+        """
+        return self._guild_connections is None
+
+    def is_available_for_purchase(self) -> bool:
+        """Whether the role is a subscription role and available for purchase.
+
+        .. versionadded:: 2.9
+
+        :return type: :class:`bool`
+        """
+        return self._available_for_purchase is None
+
+    def is_subscription(self) -> bool:
+        """Whether the role is associated with a role subscription.
+
+        .. versionadded:: 2.9
+
+        :return type: :class:`bool`
+        """
+        return self.subscription_listing_id is not None
+
     def __repr__(self) -> str:
         return (
             f"<RoleTags bot_id={self.bot_id} integration_id={self.integration_id} "
-            f"premium_subscriber={self.is_premium_subscriber()}>"
+            f"subscription_listing_id={self.subscription_listing_id} "
+            f"premium_subscriber={self.is_premium_subscriber()} "
+            f"available_for_purchase={self.is_available_for_purchase()} "
+            f"linked_role={self.is_linked_role()}>"
         )
-
-
-R = TypeVar("R", bound="Role")
 
 
 class Role(Hashable):
@@ -198,7 +219,7 @@ class Role(Hashable):
         "_state",
     )
 
-    def __init__(self, *, guild: Guild, state: ConnectionState, data: RolePayload):
+    def __init__(self, *, guild: Guild, state: ConnectionState, data: RolePayload) -> None:
         self.guild: Guild = guild
         self._state: ConnectionState = state
         self.id: int = int(data["id"])
@@ -210,7 +231,7 @@ class Role(Hashable):
     def __repr__(self) -> str:
         return f"<Role id={self.id} name={self.name!r}>"
 
-    def __lt__(self: R, other: R) -> bool:
+    def __lt__(self, other: Self) -> bool:
         if not isinstance(other, Role) or not isinstance(self, Role):
             return NotImplemented
 
@@ -231,22 +252,22 @@ class Role(Hashable):
 
         return False
 
-    def __le__(self: R, other: R) -> bool:
+    def __le__(self, other: Self) -> bool:
         r = Role.__lt__(other, self)
         if r is NotImplemented:
             return NotImplemented
         return not r
 
-    def __gt__(self: R, other: R) -> bool:
+    def __gt__(self, other: Self) -> bool:
         return Role.__lt__(other, self)
 
-    def __ge__(self: R, other: R) -> bool:
+    def __ge__(self, other: Self) -> bool:
         r = Role.__lt__(self, other)
         if r is NotImplemented:
             return NotImplemented
         return not r
 
-    def _update(self, data: RolePayload):
+    def _update(self, data: RolePayload) -> None:
         self.name: str = data["name"]
         self._permissions: int = int(data.get("permissions", 0))
         self.position: int = data.get("position", 0)
@@ -288,6 +309,15 @@ class Role(Hashable):
         """
         return self.tags is not None and self.tags.is_premium_subscriber()
 
+    def is_linked_role(self) -> bool:
+        """Whether the role is a linked role for the guild.
+
+        .. versionadded:: 2.8
+
+        :return type: :class:`bool`
+        """
+        return self.tags is not None and self.tags.is_linked_role()
+
     def is_integration(self) -> bool:
         """Whether the role is managed by an integration.
 
@@ -296,6 +326,24 @@ class Role(Hashable):
         :return type: :class:`bool`
         """
         return self.tags is not None and self.tags.is_integration()
+
+    def is_available_for_purchase(self) -> bool:
+        """Whether the role is a subscription role and available for purchase.
+
+        .. versionadded:: 2.9
+
+        :return type: :class:`bool`
+        """
+        return self.tags is not None and self.tags.is_available_for_purchase()
+
+    def is_subscription(self) -> bool:
+        """Whether the role is associated with a role subscription.
+
+        .. versionadded:: 2.9
+
+        :return type: :class:`bool`
+        """
+        return self.tags is not None and self.tags.is_subscription()
 
     def is_assignable(self) -> bool:
         """Whether the role is able to be assigned or removed by the bot.
@@ -370,13 +418,13 @@ class Role(Hashable):
 
     async def _move(self, position: int, reason: Optional[str]) -> None:
         if position <= 0:
-            raise InvalidArgument("Cannot move role to position 0 or below")
+            raise ValueError("Cannot move role to position 0 or below")
 
         if self.is_default():
-            raise InvalidArgument("Cannot move default role")
+            raise TypeError("Cannot move default role")
 
         if self.position == position:
-            return  # Save disnake the extra request.
+            return  # Save Discord the extra request.
 
         http = self._state.http
 
@@ -403,8 +451,8 @@ class Role(Hashable):
         colour: Union[Colour, int] = MISSING,
         color: Union[Colour, int] = MISSING,
         hoist: bool = MISSING,
-        icon: bytes = MISSING,
-        emoji: str = MISSING,
+        icon: Optional[AssetBytes] = MISSING,
+        emoji: Optional[str] = MISSING,
         mentionable: bool = MISSING,
         position: int = MISSING,
         reason: Optional[str] = MISSING,
@@ -424,6 +472,9 @@ class Role(Hashable):
         .. versionchanged:: 2.0
             Edits are no longer in-place, the newly edited role is returned instead.
 
+        .. versionchanged:: 2.6
+            Raises :exc:`TypeError` or :exc:`ValueError` instead of ``InvalidArgument``.
+
         Parameters
         ----------
         name: :class:`str`
@@ -434,9 +485,13 @@ class Role(Hashable):
             The new colour to change to. (aliased to ``color`` as well)
         hoist: :class:`bool`
             Indicates if the role should be shown separately in the member list.
-        icon: :class:`bytes`
+        icon: Optional[|resource_type|]
             The role's new icon image (if the guild has the ``ROLE_ICONS`` feature).
-        emoji: :class:`str`
+
+            .. versionchanged:: 2.5
+                Now accepts various resource types in addition to :class:`bytes`.
+
+        emoji: Optional[:class:`str`]
             The role's new unicode emoji.
         mentionable: :class:`bool`
             Indicates if the role should be mentionable by others.
@@ -448,13 +503,17 @@ class Role(Hashable):
 
         Raises
         ------
+        NotFound
+            The ``icon`` asset couldn't be found.
         Forbidden
             You do not have permissions to change the role.
         HTTPException
             Editing the role failed.
-        InvalidArgument
-            An invalid position was given or the default
-            role was asked to be moved.
+        TypeError
+            The default role was asked to be moved or the ``icon``
+            asset is a lottie sticker (see :func:`Sticker.read`)
+        ValueError
+            An invalid position was provided.
 
         Returns
         -------
@@ -487,10 +546,7 @@ class Role(Hashable):
             payload["mentionable"] = mentionable
 
         if icon is not MISSING:
-            if icon is None:
-                payload["icon"] = icon
-            else:
-                payload["icon"] = _bytes_to_base64_data(icon)
+            payload["icon"] = await _assetbytes_to_base64_data(icon)
 
         if emoji is not MISSING:
             payload["unicode_emoji"] = emoji
