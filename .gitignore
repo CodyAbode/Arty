@@ -1,7 +1,5 @@
 arty_log.txt
-secrets.json
-store_data.json
-user_data.json
+*.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

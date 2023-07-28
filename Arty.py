@@ -5,11 +5,21 @@ import secrets
 from typing import List
 import asyncio
 import logging
+import datetime
+import signal
+import sys
 
 import disnake
 from disnake.ext import commands
 
-log_formatter = logging.Formatter('[%(asctime)s][%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+import pix
+
+def signal_handler(sig, frame):
+    print('Received KeyboardInterrupt.')
+    sys.exit(0)
+
+datetime_format = '%Y-%m-%d %H:%M:%S'
+log_formatter = logging.Formatter('[%(asctime)s][%(levelname)s] %(message)s', datefmt=datetime_format)
 logger = logging.getLogger('arty')
 file_handler = logging.FileHandler('arty_log.txt')
 file_handler.setFormatter(log_formatter)
@@ -20,10 +30,12 @@ logger.addHandler(console_handler)
 logger.setLevel(logging.DEBUG)
 
 logger.info('Initializing...')
+signal.signal(signal.SIGINT, signal_handler)
 
 secrets_file = 'secrets.json'
 user_data_file = 'user_data.json'
 store_data_file = 'store_data.json'
+pix_data_file = 'pix_data.json'
 media_directory = 'media'
 main_color = disnake.Color.from_rgb(14, 0, 89)
 bot_version = '3.0.0'
@@ -61,13 +73,13 @@ def ensure_user_data(user: disnake.user):
         }
     return user_data
 
-def emoji(name):
+def emoji(name: str):
     for emoji in bot.emojis:
         if name == emoji.name:
             return f'<:{name}:{emoji.id}>'
     return f':{name}:'
 
-def bold(text):
+def bold(text: str):
     return f'**{text}**'
 
 def load_store_data():
@@ -79,6 +91,120 @@ def load_store_data():
 
 def hex_to_rgb(hex):
     return tuple(int(hex.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+
+def init_pix_gv(pix_data: dict, pix_type: str, attribute: str):
+    return pix_data['growth_values'][pix_type][attribute] + round((random.uniform(0.0, 0.4) - 0.2), 1)
+
+def ensure_pix_data(user: disnake.user, pix: str):
+    user_data = ensure_user_data(user)
+    inventory = user_data[str(user.id)]['inventory']
+    pix_item = next((search_item for search_item in inventory if search_item['name'] == pix), None)
+    if not pix_item:
+        return None
+    
+    if os.path.exists(pix_data_file):
+        with open(pix_data_file) as file:
+            pix_data = json.load(file)
+    else:
+        raise Exception('Unable to find the pix data file')
+    
+    if not 'pix_data' in pix_item.keys():
+        pix_type = pix_item['tags']['pix']
+        pix_item['pix_data'] = pix_data['default']
+        pix_item['pix_data']['growth_values'] = {
+            'health': init_pix_gv(pix_data, pix_type, 'health'),
+            'strength': init_pix_gv(pix_data, pix_type, 'strength'),
+            'agility': init_pix_gv(pix_data, pix_type, 'agility'),
+            'intellect': init_pix_gv(pix_data, pix_type, 'intellect'),
+            'stamina': init_pix_gv(pix_data, pix_type, 'stamina'),
+        }
+        pix_item['pix_data']['last_social'] = datetime.datetime.strftime(datetime.datetime.today(), datetime_format)
+    
+    save_user_data(user_data)
+    return pix_item
+
+def check_pix_social(pix_item: dict):
+    if not 'pix_data' in pix_item.keys():
+        return 3
+    last_social_datetime = datetime.datetime.strptime(pix_item['pix_data']['last_social'], datetime_format)
+    weeks_since = (datetime.datetime.today() - last_social_datetime).days // 7
+    if weeks_since >= 3:
+        social = 0
+    else:
+        social = 3 - weeks_since
+    return social
+
+def check_pix_mood(pix_item: dict):
+    if 'pix_data' in pix_item.keys():
+        thirst = pix_item['pix_data']['thirst']
+        hunger = pix_item['pix_data']['hunger']
+        social = check_pix_social(pix_item)
+        mood = thirst + hunger + social
+    else:
+        thirst = None
+        hunger = None
+        social = None
+        mood = None
+    match mood:
+        case 0:
+            mood_word = 'miserable'
+        case 1:
+            mood_word = 'gloomy'
+        case 2:
+            mood_word = 'sad'
+        case 3:
+            mood_word = 'unhappy'
+        case 4:
+            mood_word = 'okay'
+        case 5:
+            mood_word = 'content'
+        case 6:
+            mood_word = 'happy'
+        case 7:
+            mood_word = 'joyful'
+        case 8:
+            mood_word = 'ecstatic'
+        case 9:
+            mood_word = 'elated'
+        case _:
+            mood_word = 'ambivalent'
+    match thirst:
+        case 0:
+            thirst_word = 'dehydrated'
+        case 1:
+            thirst_word = 'thirsty'
+        case _:
+            thirst_word = ''
+    match hunger:
+        case 0:
+            hunger_word = 'famished'
+        case 1:
+            hunger_word = 'hungry'
+        case _:
+            hunger_word = ''
+    match social:
+        case 0:
+            social_word = 'forlorn'
+        case 1:
+            social_word = 'lonely'
+        case _:
+            social_word = ''
+
+    mood_words = [mood_word, thirst_word, hunger_word, social_word]
+    mood_words = [i for i in mood_words if i != '']
+
+    if len(mood_words) > 1:
+        if mood >= 5:
+                mood_words[0] += ', but they are '
+        else:
+            mood_words[0] += ' because they are '
+
+    if len(mood_words) > 2:
+        mood_words[-1] = f'and {mood_words[-1]}'
+
+    mood_desciption = f"They are {mood_words[0] + ', '.join(mood_words[1:])}."
+    #print(f'[{thirst}][{hunger}][{social}] {mood_desciption}')
+    return mood_desciption
 
 intents = disnake.Intents.default()
 intents.presences = False
@@ -168,7 +294,6 @@ async def leaderboard(inter, quiet: bool = True):
     users = ''
     tickets = ''
     for user_id, user_data in sorted_data.items():
-        #user = await bot.fetch_user(user_id)
         user = await bot.guilds[0].fetch_member(user_id)
         ticket = str(user_data['tickets_earned'])
         users += f'{user.nick or user.global_name or user.name}\n'
@@ -326,15 +451,15 @@ class CapsuleView(disnake.ui.View):
         result = random.choices(open_options, weights=[10, 1, 1], k=1)[0]
         if result == 'pix':
             pix_types = ['basic', 'mask', 'furry', 'grated', 'combined', 'linear', 'wild', 'thorny', 'poisonous', 'mystical', 'elemental', 'ancient']
-            type_weights = [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
-            pix_type_result = random.choices(pix_types, weights=type_weights, k=1)[0]
+            pix_type_weights = [12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+            pix_type_result = random.choices(pix_types, weights=pix_type_weights, k=1)[0]
             pix_list = os.listdir(os.path.join(media_directory, 'Pix', pix_type_result))
             image = os.path.join('Pix', pix_type_result, random.choice(pix_list))
             pix_item = {
                 'name': f"{pix_type_result.capitalize()} Pix#{str(random.randint(0, 9999)).rjust(4, '0')}",
                 'emoji': 'Capsule',
                 'image': image,
-                'description': f"A creature known as a pix. This is a {pix_type_result} pix. It was found by {inter.author.display_name}.",
+                'description': f"A creature known as a pix. This is a {pix_type_result} pix. It was found by {inter.author.display_name} on {datetime.date.today()}.",
                 'tags': {'pix': pix_type_result}
             }
             user_data[str(inter.author.id)]['inventory'].append(pix_item)
@@ -625,5 +750,103 @@ async def buy(inter, item: str = commands.Param(autocomplete=autocomplete_store_
                 await inter.response.send_message(f"You don't have enough tickets for {emoji(listing['item']['emoji'])} {bold(listing['item']['name'])}.", ephemeral=True)
                 return
     await inter.response.send_message(f"Could not find {bold(item)} in the store.", ephemeral=True)
+
+@bot.slash_command()
+async def pix(inter):
+    pass
+
+async def autocomplete_pix(inter, string: str) -> List[str]:
+    user_data = ensure_user_data(inter.author)
+    inventory = user_data[str(inter.author.id)]['inventory']
+    item_names = []
+    for item in inventory:
+        if 'pix' in item['tags'].keys():
+            item_names.append(item['name'])
+    return item_names
+
+@pix.sub_command()
+async def show(inter, pix: str = commands.Param(autocomplete=autocomplete_pix)):
+    """
+    Display a pix's details.
+
+    Parameters
+    ----------
+    pix: The pix to inspect.
+    """
+    logger.info(f'{inter.author} used /pix show(item: {pix})')
+    if os.path.exists(pix_data_file):
+        with open(pix_data_file) as file:
+            pix_data = json.load(file)
+    else:
+        raise Exception('Unable to find the pix data file')
+    pix_item = ensure_pix_data(inter.author, pix)
+    if not pix_item:
+        await inter.response.send_message(f"Could not get {bold(pix)}.", ephemeral=True)
+        return
+
+    pix_mood = check_pix_mood(pix_item)
+    title = pix_item['pix_data']['nickname'] or pix_item['name']
+    description = pix_mood
+    pix_show_embed = disnake.Embed(
+        title=title,
+        type='rich',
+        description=description,
+        color=main_color,
+    )
+    if pix_item['image']:
+        filepath = os.path.join(media_directory, pix_item['image'])
+        with open(filepath, 'rb') as file:
+            pix_show_embed.set_image(file=disnake.File(file))
+    exp_to_next_lvl = pix_data['levels'][pix_item['pix_data']['level']]
+    pix_thirst = (emoji('blue_square') * pix_item['pix_data']['thirst']) + (emoji('white_small_square') * (3 - pix_item['pix_data']['thirst']))
+    pix_hunger = (emoji('green_square') * pix_item['pix_data']['hunger']) + (emoji('white_small_square') * (3 - pix_item['pix_data']['hunger']))
+    social = check_pix_social(pix_item)
+    pix_social = (emoji('yellow_square') * social) + (emoji('white_small_square') * (3 - social))
+    pix_show_embed.add_field(name='Health', value=f"{pix_item['pix_data']['health']}/{pix_item['pix_data']['max_health']}")
+    pix_show_embed.add_field(name='Stamina', value=f"{pix_item['pix_data']['stamina']}/{pix_item['pix_data']['max_stamina']}")
+    pix_show_embed.add_field(name='Level', value=f"{pix_item['pix_data']['level']} ({pix_item['pix_data']['experience']}/{exp_to_next_lvl})")
+    pix_show_embed.add_field(name='Thirst', value=pix_thirst)
+    pix_show_embed.add_field(name='Hunger', value=pix_hunger)
+    pix_show_embed.add_field(name='Social', value=pix_social)
+    pix_show_embed.add_field(name='Strength', value=f"{pix_item['pix_data']['strength']}")
+    pix_show_embed.add_field(name='Agility', value=f"{pix_item['pix_data']['agility']}")
+    pix_show_embed.add_field(name='Intellect', value=f"{pix_item['pix_data']['intellect']}")
+    pix_show_embed.set_footer(text=pix_item['name'])
+    await inter.response.send_message(embed=pix_show_embed, ephemeral=True)
+
+@pix.sub_command()
+async def pet(inter, pix: str = commands.Param(autocomplete=autocomplete_pix)):
+    """
+    Pet a pix.
+
+    Parameters
+    ----------
+    pix: The pix to pet.
+    """
+    logger.info(f'{inter.author} used /pix show(item: {pix})')
+    pix_item = ensure_pix_data(inter.author, pix)
+    if not pix_item:
+        await inter.response.send_message(f"Could not get {bold(pix)}.", ephemeral=True)
+        return
+    
+    previous_social = check_pix_social(pix_item)
+    match previous_social:
+        case 0:
+            social_word = 'forlorn'
+        case 1:
+            social_word = 'lonely'
+        case _:
+            social_word = ''
+
+    user_data = ensure_user_data(inter.author)
+    pix_item_index = user_data[str(inter.author.id)]['inventory'].index(pix_item)
+    user_data[str(inter.author.id)]['inventory'][pix_item_index]['pix_data']['last_social'] = \
+        datetime.datetime.strftime(datetime.datetime.today(), datetime_format)
+    save_user_data(user_data)
+    message = f"You pet {bold(pix_item['pix_data']['nickname'] or pix_item['name'])}."
+    if not social_word == '':
+        message += f' They are no longer {social_word}!'
+    await inter.response.send_message(message, ephemeral=True)
+    return
 
 bot.run(bot_token)
