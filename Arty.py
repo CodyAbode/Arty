@@ -2,14 +2,15 @@ import os
 import json
 import random
 import secrets
-from typing import List
 import asyncio
 import logging
+from typing import List
 
 import disnake
 from disnake.ext import commands
 
-log_formatter = logging.Formatter('[%(asctime)s][%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+datetime_format = '%Y-%m-%d %H:%M:%S'
+log_formatter = logging.Formatter('[%(asctime)s][%(levelname)s] %(message)s', datefmt=datetime_format)
 logger = logging.getLogger('arty')
 file_handler = logging.FileHandler('arty_log.txt')
 file_handler.setFormatter(log_formatter)
@@ -26,7 +27,7 @@ user_data_file = 'user_data.json'
 store_data_file = 'store_data.json'
 media_directory = 'media'
 main_color = disnake.Color.from_rgb(14, 0, 89)
-bot_version = '3.0.0'
+bot_version = '3.2.0'
 moderator = disnake.Permissions(moderate_members=True)
 
 if os.path.exists(secrets_file):
@@ -34,7 +35,8 @@ if os.path.exists(secrets_file):
             secrets = json.load(file)
         bot_token = secrets['bot_token']
         guild_id = secrets['guild_id']
-        general_chanel = secrets['general_chanel']
+        general_channel = secrets['general_channel']
+        mod_channel = secrets['mod_channel']
 else:
     error_msg = f'Could not find {secrets_file}'
     logger.error(error_msg)
@@ -80,6 +82,9 @@ def load_store_data():
 def hex_to_rgb(hex):
     return tuple(int(hex.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
 
+command_sync_flags = commands.CommandSyncFlags.default()
+command_sync_flags.sync_commands_debug = True
+
 intents = disnake.Intents.default()
 intents.presences = False
 intents.members = True
@@ -88,7 +93,7 @@ intents.message_content = True
 bot = commands.Bot(
     command_prefix=commands.when_mentioned,
     test_guilds=[guild_id],
-    sync_commands_debug=True,
+    command_sync_flags=command_sync_flags,
     intents=intents
     )
 
@@ -158,6 +163,7 @@ async def leaderboard(inter, quiet: bool = True):
     quiet: Hides the reponse, so only you can see it.
     """
     logger.info(f'{inter.author} used /ticket leaderboard(quiet: {quiet})')
+    await inter.response.defer(ephemeral=quiet)
     user_data = load_user_data()
     sorted_data = {k: v for k, v in sorted(user_data.items(), key=lambda item: item[1]['tickets_earned'], reverse=True)}
     leaderboard_embed = disnake.Embed(
@@ -168,14 +174,17 @@ async def leaderboard(inter, quiet: bool = True):
     users = ''
     tickets = ''
     for user_id, user_data in sorted_data.items():
-        #user = await bot.fetch_user(user_id)
-        user = await bot.guilds[0].fetch_member(user_id)
+        try:
+            user = await bot.guilds[0].fetch_member(user_id)
+            users += f'{user.nick or user.global_name or user.name}\n'
+        except:
+            user = await bot.fetch_user(user_id)
+            users += f'{user.global_name or user.name}\n'
         ticket = str(user_data['tickets_earned'])
-        users += f'{user.nick or user.global_name or user.name}\n'
         tickets += f"{ticket} {emoji('ArcadeTicket')}\n"
     leaderboard_embed.add_field(name='Members', value=users)
     leaderboard_embed.add_field(name='Tickets Earned', value=tickets)
-    await inter.response.send_message(embed=leaderboard_embed, ephemeral=quiet)
+    await inter.edit_original_response(embed=leaderboard_embed)
 
 @ticket.sub_command()
 async def send(
@@ -295,7 +304,7 @@ class ComplimentVoucherView(disnake.ui.View):
             f"This server wouldn't be the same without you, <@{member.id}>.",
             f"This is the picture I got when I looked up *charming* in the dictionary: {member.avatar.url}",
         ]
-        await bot.guilds[0].get_channel(general_chanel).send(random.choice(compliments))
+        await bot.guilds[0].get_channel(general_channel).send(random.choice(compliments))
         user_data = load_user_data()
         for index, item in enumerate(user_data[str(inter.author.id)]['inventory']):
             if item['name'] == 'Arty Compliment Voucher':
@@ -465,7 +474,7 @@ async def item(inter):
     pass
 
 @item.sub_command()
-async def show(inter, item: str = commands.Param(autocomplete=autocomplete_items)):
+async def show(inter, item: str = commands.Param(autocomplete=autocomplete_items), quiet: bool = True):
     """
     Display the details of an item.
 
@@ -473,7 +482,7 @@ async def show(inter, item: str = commands.Param(autocomplete=autocomplete_items
     ----------
     item: The item to inspect.
     """
-    logger.info(f'{inter.author} used /item show(item: {item})')
+    logger.info(f'{inter.author} used /item show(item: {item}, quiet: {quiet})')
     user_data = ensure_user_data(inter.author)
     inventory = user_data[str(inter.author.id)]['inventory']
     inventory_item = next((search_item for search_item in inventory if search_item['name'] == item), None)
@@ -504,7 +513,7 @@ async def show(inter, item: str = commands.Param(autocomplete=autocomplete_items
         view = ColorRoleView(inventory_item['tags']['color-role'])
         await inter.response.send_message(embed=item_show_embed, view=view, ephemeral=True)
         return
-    await inter.response.send_message(embed=item_show_embed, ephemeral=True)
+    await inter.response.send_message(embed=item_show_embed, ephemeral=quiet)
 
 @item.sub_command()
 async def send(
@@ -625,5 +634,11 @@ async def buy(inter, item: str = commands.Param(autocomplete=autocomplete_store_
                 await inter.response.send_message(f"You don't have enough tickets for {emoji(listing['item']['emoji'])} {bold(listing['item']['name'])}.", ephemeral=True)
                 return
     await inter.response.send_message(f"Could not find {bold(item)} in the store.", ephemeral=True)
+
+@bot.slash_command(default_member_permissions=moderator)
+async def giveaway_steamkey(inter):
+    """Create a giveaway for a Steam key."""
+    logger.info(f'{inter.author} used giveaway steamkey()')
+    # await inter.response.send_message(f'Pong! ({inter.client.latency*1000}ms)')
 
 bot.run(bot_token)
