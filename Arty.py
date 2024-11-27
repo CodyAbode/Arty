@@ -5,9 +5,12 @@ import secrets
 import asyncio
 import logging
 from typing import List
+import datetime
 
 import disnake
 from disnake.ext import commands
+
+import dice_express
 
 datetime_format = '%Y-%m-%d %H:%M:%S'
 log_formatter = logging.Formatter('[%(asctime)s][%(levelname)s] %(message)s', datefmt=datetime_format)
@@ -339,11 +342,13 @@ class CapsuleView(disnake.ui.View):
             pix_type_result = random.choices(pix_types, weights=type_weights, k=1)[0]
             pix_list = os.listdir(os.path.join(media_directory, 'Pix', pix_type_result))
             image = os.path.join('Pix', pix_type_result, random.choice(pix_list))
+            now = datetime.datetime.now()
+            pix_found_date = f'{now.month}-{now.day}-{now.year}'
             pix_item = {
                 'name': f"{pix_type_result.capitalize()} Pix#{str(random.randint(0, 9999)).rjust(4, '0')}",
                 'emoji': 'Capsule',
                 'image': image,
-                'description': f"A creature known as a pix. This is a {pix_type_result} pix. It was found by {inter.author.display_name}.",
+                'description': f"A creature known as a pix. This is a {pix_type_result} pix. It was found by {inter.author.display_name} on {pix_found_date}.",
                 'tags': {'pix': pix_type_result}
             }
             user_data[str(inter.author.id)]['inventory'].append(pix_item)
@@ -635,10 +640,17 @@ async def buy(inter, item: str = commands.Param(autocomplete=autocomplete_store_
                 return
     await inter.response.send_message(f"Could not find {bold(item)} in the store.", ephemeral=True)
 
-@bot.slash_command(default_member_permissions=moderator)
-async def giveaway_steamkey(inter):
-    """Create a giveaway for a Steam key."""
-    logger.info(f'{inter.author} used giveaway steamkey()')
-    # await inter.response.send_message(f'Pong! ({inter.client.latency*1000}ms)')
+@bot.slash_command()
+async def roll(inter, dice_expression: str):
+    """
+    Roll dice.
+
+    Parameters
+    ----------
+    dice_expression: The dice you wish to roll, and modifiers to apply to them.
+    """
+    logger.info(f'{inter.author} used /roll(dice_expression: {dice_expression})')
+    result = dice_express.eval_dice_express(dice_expression)
+    await inter.response.send_message(f'{result}')
 
 bot.run(bot_token)
