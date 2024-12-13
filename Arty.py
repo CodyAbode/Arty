@@ -85,10 +85,11 @@ def remove_inventory_item(user: disnake.user, item_id: str):
             break
 
 def add_inventory_item(user: disnake.user, item: dict):
+    #print(f'add_inventory_item: {user.display_name=}, {item=}')
     user_data = ensure_user_data(user)
     inventory = user_data[str(user.id)]['inventory']
     if len(inventory) >= 25:
-        error = f'Users inventory is full.'
+        error = 'Users inventory is full.'
         logger.warning(error)
         raise InventoryError(error)
     if not any(tag in ['unique', 'stackable'] for tag in item['tags']):
@@ -115,7 +116,9 @@ def add_inventory_item(user: disnake.user, item: dict):
                 logger.warning(error)
                 raise InventoryError(error)
     if not stacked:
+        #print('item was not stacked')
         user_data[str(user.id)]['inventory'].append(item)
+    #print(f'saving {user_data=}')
     save_user_data(user_data)
 
 def emoji(name):
@@ -138,6 +141,18 @@ def save_store_data(store_data):
     with open(store_data_file, 'w') as file:
         json.dump(store_data, file, indent=4)
 
+def restock_store():
+    logger.info('Restocking the store.')
+    store_data = load_store_data()
+    for index, listing in enumerate(store_data):
+        if listing['stock']['type'] == 'unlimited':
+            continue
+        for user in listing['stock']['users']:
+            store_data[index]['stock']['users'][user] += listing['stock']['restock-amount']
+            if store_data[index]['stock']['users'][user] > listing['stock']['max']:
+                store_data[index]['stock']['users'][user] = listing['stock']['max']
+    save_store_data(store_data)
+
 def hex_to_rgb(hex):
     return tuple(int(hex.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
 
@@ -154,10 +169,10 @@ async def scheduled_actions():
                 last_run_time_str = data.get('last_run_time')
                 if last_run_time_str:
                     last_run_time = datetime.datetime.fromisoformat(last_run_time_str)
-                    print(f'Last scheduled action performed at {last_run_time}.')
+                    logger.info(f'Last scheduled action performed at {last_run_time}.')
         else:
             # If no JSON file exists, set last_run_time to now
-            print(f'No previous scheduled action found.')
+            logger.info(f'No previous scheduled action found.')
             last_run_time = now
             with open(json_file, 'w') as f:
                 json.dump({'last_run_time': last_run_time.isoformat()}, f)
@@ -175,23 +190,12 @@ async def scheduled_actions():
 
         # For each missed cycle, perform the action
         for scheduled_time in scheduled_times:
-            print(f'Missed scheduled time at {scheduled_time}, performing action now.')
-            # Perform the action (print the time)
-            print(f'Action performed for scheduled time: {scheduled_time}')
+            logger.info(f'Missed scheduled time at {scheduled_time}, performing action now.')
             if scheduled_time.hour == 9:
                 pass
             if scheduled_time.hour == 21:
-                # Restock the store
-                store_data = load_store_data()
-                for listing in store_data:
-                    if listing['stock']['type'] == 'unlimited':
-                        continue
-                    for user in listing['stock']['users']:
-                        listing['stock']['users'][user] += listing['stock']['restock-amount']
-                        if listing['stock']['users'][user] >= listing['stock']['max']:
-                            listing['stock']['users'][user] = listing['stock']['max']
-                save_store_data(store_data)
-                
+                restock_store()
+
         # Update last_run_time to the latest scheduled time
         if scheduled_times:
             last_run_time = scheduled_times[-1]
@@ -205,11 +209,15 @@ async def scheduled_actions():
             sleep_seconds = (next_time - datetime.datetime.now()).total_seconds()
 
             if sleep_seconds > 0:
-                print(f'Next scheduled action in {sleep_seconds / 3600:.2f} hour(s) at {next_time}...')
+                logger.info(f'Next scheduled action in {sleep_seconds / 3600:.2f} hour(s) at {next_time}...')
                 await asyncio.sleep(sleep_seconds)
 
-            # Perform the action (print the time)
-            print(f'Scheduled time: {next_time}, performing action.')
+            # Perform the action
+            logger.info(f'Scheduled time: {next_time}, performing action.')
+            if next_time.hour == 9:
+                pass
+            if next_time.hour == 21:
+                restock_store()
             # Update last_run_time
             last_run_time = next_time
             # Write last_run_time to JSON file
@@ -217,10 +225,8 @@ async def scheduled_actions():
                 json.dump({'last_run_time': last_run_time.isoformat()}, f)
 
     except asyncio.CancelledError:
-        print('Scheduled actions are cancelled.')
+        logger.info('Scheduled actions are cancelled.')
         raise
-    except Exception as e:
-        print(f'An error occurred: {e}')
 
 def previous_scheduled_time(now):
     today = now.date()
@@ -269,11 +275,11 @@ bot = commands.Bot(
 
 @bot.event
 async def on_ready():
+    logger.info(f'Ready! Bot version {bot_version}. Logged in as {bot.user} (ID: {bot.user.id})')
     try:
-        asyncio.run(scheduled_actions())
+        await scheduled_actions()
     except KeyboardInterrupt:
         pass
-    logger.info(f'Ready! Bot version {bot_version}. Logged in as {bot.user} (ID: {bot.user.id})')
 
 @bot.slash_command(default_member_permissions=moderator)
 async def ping(inter):
@@ -519,6 +525,10 @@ class CapsuleView(disnake.ui.View):
                 'emoji': 'Capsule',
                 'image': image,
                 'description': f"A creature known as a pix. This is a {pix_type_result} pix. It was found by {inter.author.display_name} on {pix_found_date}.",
+                'data': {
+                    'pix_type': pix_type_result
+                },
+                'id': f'{pix_type_result}-pix',
                 'tags': ['pix']
             }
             user_data[str(inter.author.id)]['inventory'].append(pix_item)
@@ -699,7 +709,7 @@ class winterfest2024PresentView(disnake.ui.View):
         event_data = load_event_data()
         if not 'present_openers' in event_data:
             event_data['present_openers'] = []
-        if not inter.author.id in event_data['present_openers']:
+        if not str(inter.author.id) in event_data['present_openers']:
             event_data['present_openers'].append(str(inter.author.id))
             save_event_data(event_data)
         if not 'snowman_parts_found' in event_data:
@@ -759,7 +769,7 @@ class winterfest2024PresentView(disnake.ui.View):
                     add_inventory_item(member, color_role_item)
         remove_inventory_item(inter.author, 'winterfest-2024-present')
         await inter.send(f"You got {emoji(item['emoji'])} {bold(item['name'])}{snowball_quantity_str}!", ephemeral=True)
-        logger.info(f'{inter.author} opened {self.present} and got {item['name']}')
+        logger.info(f'{inter.author} opened {self.present} and got {item['name']}{snowball_quantity_str}')
 
 class SnowballView(disnake.ui.View):
     def __init__(self):
@@ -779,7 +789,7 @@ class SnowballView(disnake.ui.View):
                 placeholder='The user to throw the snowball at...',
                 max_length=32
                 )
-            ]
+            ],
         )
 
         try:
@@ -798,6 +808,13 @@ class SnowballView(disnake.ui.View):
             logger.debug(f'{inter.author} tried to throw a snowball at a non-existant member named {user}')
             self.stop()
             return
+        user_data = load_user_data()
+        inventory = user_data[str(inter.author.id)]['inventory']
+        inventory_item = next((search_item for search_item in inventory if search_item['id'] == 'snowball'), None)
+        if not inventory_item:
+            await inter.response.send_message(f"Could not find a snowball in your inventory.", ephemeral=True)
+            logger.warning(f"Could not find snowball in {inter.author}'s inventory")
+            return
         event_data = load_event_data()
         cocoa_bonus = 0
         if not 'cocoa_bonuses' in event_data:
@@ -806,15 +823,15 @@ class SnowballView(disnake.ui.View):
             cocoa_bonus = event_data['cocoa_bonuses'][str(inter.author.id)]
         roll_result = random.randrange(0, 20) + 1
         if roll_result == 20:
-            throw_result = f'{inter.author.display_name} threw a snowball at {member.display_name} and got a perfect hit! They have earned some Hot Cocoa.'
+            throw_result = f'<@{inter.author.id}> threw a {emoji('Snowball')} {bold('Snowball')} at <@{member.id}> and got a perfect hit! They have earned some Hot Cocoa.'
             add_inventory_item(inter.author, hot_cocoa_item)
         elif roll_result == 1:
-            throw_result = f'{inter.author.display_name} threw a snowball at {member.display_name}, but they caught it!'
+            throw_result = f'<@{inter.author.id}> threw a {emoji('Snowball')} {bold('Snowball')} at <@{member.id}>, but they caught it!'
             add_inventory_item(member, snowball_item)
         elif roll_result + cocoa_bonus >= 10:
-            throw_result = f'{inter.author.display_name} threw a snowball at {member.display_name}, and hit.'
+            throw_result = f'<@{inter.author.id}> threw a {emoji('Snowball')} {bold('Snowball')} at <@{member.id}>, and hit.'
         else:
-            throw_result = f'{inter.author.display_name} threw a snowball at {member.display_name}, but missed.'
+            throw_result = f'<@{inter.author.id}> threw a {emoji('Snowball')} {bold('Snowball')} at <@{member.id}>, but missed.'
         await bot.guilds[0].get_channel(general_channel).send(throw_result)
         remove_inventory_item(inter.author, 'snowball')
         await modal_inter.response.send_message(f'Threw snowball at {bold(member.display_name)}.', ephemeral=True)
@@ -883,12 +900,12 @@ async def show(inter, item: str = commands.Param(autocomplete=autocomplete_items
     elif 'capsule' in inventory_item['tags']:
         view = CapsuleView(item)
     elif 'color-role' in inventory_item['tags']:
-        view = ColorRoleView(inventory_item['tags']['color-role'])
-    elif inventory_item[id] == 'winterfest-2024-present':
+        view = ColorRoleView(inventory_item['data']['color-role'])
+    elif inventory_item['id'] == 'winterfest-2024-present':
         view = winterfest2024PresentView(item)
-    elif inventory_item[id] == 'snowball':
+    elif inventory_item['id'] == 'snowball':
         view = SnowballView()
-    elif inventory_item[id] == 'hot-cocoa':
+    elif inventory_item['id'] == 'hot-cocoa':
         view = CocoaView()
     if view:
         await inter.response.send_message(embed=item_show_embed, view=view, ephemeral=True)
@@ -965,7 +982,11 @@ async def display(inter):
             if 'description' in listing['store-override']:
                 listing_description = listing['store-override']['description']
         store_display_embed_name = f"{emoji(listing_emoji)} {bold(listing_name)}"
-        store_display_embed_value = f"{listing_description}\nPrice: {listing['price']} {emoji('ArcadeTicket')}"
+        if listing['price'] == 0:
+            price = bold('free')
+        else:
+            price = f'{listing['price']} {emoji('ArcadeTicket')}'
+        store_display_embed_value = f"{listing_description}\nPrice: {price}"
         if listing['stock']['type'] != 'unlimited':
             if str(inter.author.id) in listing['stock']['users']:
                 listing_stock = listing['stock']['users'][str(inter.author.id)]
@@ -1000,7 +1021,7 @@ async def buy(inter, item: str = commands.Param(autocomplete=autocomplete_store_
     ----------
     item: The item to buy.
     """
-    logger.info(f'{inter.author} used /store display(item: {item})')
+    logger.info(f'{inter.author} used /store buy(item: {item})')
     if not item:
         await inter.response.send_message('You must choose an item to buy.', ephemeral=True)
         return
@@ -1028,6 +1049,7 @@ async def buy(inter, item: str = commands.Param(autocomplete=autocomplete_store_
             except InventoryError as e:
                 await inter.response.send_message(f'Could not add item to inventory: {e}')
                 return
+            user_data = load_user_data()
             user_data[str(inter.author.id)]['tickets'] -= listing['price']
             save_user_data(user_data)
             if listing['stock']['type'] != 'unlimited':
